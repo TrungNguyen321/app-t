@@ -76,6 +76,7 @@ uniform int uFill;        // 0 black, 1 white, 2 edge, 3 mirror, 4 mirror+blur
 uniform vec4 uLB;         // on, amount, radius, feather
 uniform vec4 uLB2;        // x, y, bokeh, shape (0 radial, 1 linear)
 uniform float uLBAngle;
+uniform vec2 uFish;       // fisheye strength 0..1, circular frame (1)
 
 const float HUES[8] = float[8](0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 275.0, 315.0);
 
@@ -205,6 +206,14 @@ vec2 warp(vec2 uv) {
 vec2 lensGeom(vec2 uv) {
   vec2 p = uv - 0.5; p.x *= uAspectC;
   p /= uLensA.z;
+  // fisheye: magnify the centre, compress the edges (equidistant-like projection)
+  if (uFish.x > 0.0) {
+    float rmax = uFish.y > 0.5 ? 0.5 * min(uAspectC, 1.0) : length(vec2(0.5 * uAspectC, 0.5));
+    float R = length(p) / rmax;
+    float th = uFish.x * 1.35;
+    float rs = tan(min(R * th, 1.52)) / tan(th);
+    p *= rs / max(R, 1e-5);
+  }
   float w = 1.0 + uLensA.y * p.x * 0.9 + uLensA.x * p.y * 0.9;
   p /= max(w, 0.2);
   p *= 1.0 + uLensA.w * dot(p, p) * 0.6;
@@ -228,6 +237,12 @@ vec3 diskBlur(vec2 cuv, float R, float bokeh) {
 }
 
 void main() {
+  if (uFish.y > 0.5 && uOriginal < 0.5) {      // circular fisheye frame
+    vec2 d = (vUv - 0.5) * vec2(uOutSize.x / uOutSize.y, 1.0);
+    float rr = 0.5 * min(uOutSize.x / uOutSize.y, 1.0);
+    float e = smoothstep(rr - 0.004, rr, length(d));
+    if (e >= 1.0) { outColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
+  }
   vec2 cuv = lensGeom(warp(vUv));
   vec2 suv = toSrc(cuv);
   vec2 od2 = max(-suv, suv - 1.0);
@@ -491,6 +506,11 @@ void main() {
     float n = vnoise(g) * 0.6 + vnoise(g * 2.1 + 17.0) * 0.4;
     float gl = luma(c);
     c += (n - 0.5) * uGrain * 0.16 * (1.0 - abs(gl - 0.5) * 1.2);
+  }
+  if (uFish.y > 0.5) {                          // anti-aliased circle edge
+    vec2 d = (vUv - 0.5) * vec2(uOutSize.x / uOutSize.y, 1.0);
+    float rr = 0.5 * min(uOutSize.x / uOutSize.y, 1.0);
+    c *= 1.0 - smoothstep(rr - 0.004, rr, length(d));
   }
   outColor = vec4(clamp(c, 0.0, 1.0), 1.0);
 }`;
