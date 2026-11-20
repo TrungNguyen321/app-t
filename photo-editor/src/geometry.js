@@ -17,6 +17,9 @@ export function computeGeometry(p, srcW, srcH) {
   const th = (p.straighten * Math.PI) / 180, c = Math.cos(th), s = Math.abs(Math.sin(th));
   const f = Math.min(1, W / (cw * c + ch * s), H / (cw * s + ch * c));
   cw *= f / p.zoom; ch *= f / p.zoom;
+  // 'Mở rộng khung': grow the window beyond the photo; the shader fills the new border
+  const ex = 1 + 2 * (p.expand || 0) / 100;
+  cw *= ex; ch *= ex;
   const bbW = cw * c + ch * s, bbH = cw * s + ch * c;
   const cx = W / 2 + p.panX * Math.max(0, (W - bbW) / 2);
   const cy = H / 2 + p.panY * Math.max(0, (H - bbH) / 2);

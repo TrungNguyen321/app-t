@@ -67,6 +67,13 @@ uniform float uDispOn;
 uniform float uSkinSmooth, uSkinBright, uSkinRed;
 uniform vec2 uDRk;                 // (input white point, knee) for the DR shoulder; knee >= 1 = off
 uniform float uChrome, uChromeBlue; // colour chrome effect / blue (0..1)
+// ---- lens ----
+uniform vec4 uLensA;      // persV, persH, persZoom, distort
+uniform float uCA;        // chromatic aberration (-1..1)
+uniform int uFill;        // 0 black, 1 white, 2 edge, 3 mirror, 4 mirror+blur
+uniform vec4 uLB;         // on, amount, radius, feather
+uniform vec4 uLB2;        // x, y, bokeh, shape (0 radial, 1 linear)
+uniform float uLBAngle;
 
 const float HUES[8] = float[8](0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 275.0, 315.0);
 
@@ -192,10 +199,62 @@ vec2 warp(vec2 uv) {
   return vec2(q.x / uAspectC, q.y);
 }
 
+// perspective (keystone) + barrel/pincushion distortion, in crop uv
+vec2 lensGeom(vec2 uv) {
+  vec2 p = uv - 0.5; p.x *= uAspectC;
+  p /= uLensA.z;
+  float w = 1.0 + uLensA.y * p.x * 0.9 + uLensA.x * p.y * 0.9;
+  p /= max(w, 0.2);
+  p *= 1.0 + uLensA.w * dot(p, p) * 0.6;
+  p.x /= uAspectC;
+  return p + 0.5;
+}
+vec2 toSrc(vec2 cuv) { return (uGeo * vec3(cuv, 1.0)).xy; }
+vec2 mirrorUv(vec2 s) { return 1.0 - abs(1.0 - abs(s)); }
+// golden-angle disk blur around crop-uv point; R in crop-height units
+vec3 diskBlur(vec2 cuv, float R, float bokeh) {
+  vec3 acc = vec3(0.0); float ws = 0.0;
+  for (int i = 0; i < 28; i++) {
+    float r = sqrt((float(i) + 0.5) / 28.0) * R, a = float(i) * 2.39996;
+    vec2 o = vec2(cos(a) * r / uAspectC, sin(a) * r);
+    vec3 s = src(mirrorUv(toSrc(cuv + o)));
+    float l = luma(s);
+    float w = 1.0 + bokeh * l * l * 10.0;
+    acc += s * w; ws += w;
+  }
+  return acc / ws;
+}
+
 void main() {
-  vec2 suv = (uGeo * vec3(warp(vUv), 1.0)).xy;
-  if (suv.x < -0.001 || suv.y < -0.001 || suv.x > 1.001 || suv.y > 1.001) { outColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
-  vec3 lin = src(suv);
+  vec2 cuv = lensGeom(warp(vUv));
+  vec2 suv = toSrc(cuv);
+  vec2 od2 = max(-suv, suv - 1.0);
+  float od = max(max(od2.x, od2.y), 0.0);
+  float fillBlur = 0.0;
+  if (od > 0.0005) {
+    if (uFill == 0) { outColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
+    if (uFill == 1) { outColor = vec4(1.0); return; }
+    if (uFill == 2) suv = clamp(suv, 0.0, 1.0);
+    else { suv = mirrorUv(suv); if (uFill == 4) fillBlur = 0.012 + od * 0.25; }
+  }
+  vec3 lin;
+  // lens blur mask (display space)
+  float lbM = 0.0;
+  if (uLB.x > 0.5 && uOriginal < 0.5) {
+    vec2 d = (vUv - uLB2.xy) * vec2(uOutSize.x / uOutSize.y, 1.0);
+    float dist;
+    if (uLB2.w > 0.5) { vec2 n = vec2(-sin(uLBAngle), cos(uLBAngle)); dist = abs(dot(d, n)); }
+    else dist = length(d);
+    lbM = smoothstep(uLB.z, uLB.z + max(uLB.w, 0.001), dist);
+  }
+  float R = max(fillBlur, lbM * uLB.y * 0.035);
+  if (R > 0.0008) lin = diskBlur(cuv, R, uLB2.z * (fillBlur > 0.0 ? 0.0 : 1.0));
+  else lin = src(suv);
+  if (uCA != 0.0 && R <= 0.0008) {
+    vec2 c0 = cuv - 0.5;
+    lin.r = src(mirrorUv(toSrc(0.5 + c0 * (1.0 + uCA * 0.006)))).r;
+    lin.b = src(mirrorUv(toSrc(0.5 + c0 * (1.0 - uCA * 0.006)))).b;
+  }
   if (uOriginal > 0.5) {
     vec3 o = uIsRaw > 0.5 ? toSrgb(lin * exp2(0.35)) : toSrgb(lin);
     outColor = vec4(o, 1.0); return;

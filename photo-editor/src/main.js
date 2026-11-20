@@ -48,12 +48,13 @@ const ICONS = {
   face: '<ellipse cx="12" cy="12" rx="6.5" ry="8.5" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="9.5" cy="10.5" r="1" fill="currentColor"/><circle cx="14.5" cy="10.5" r="1" fill="currentColor"/><path d="M9.5 15.5q2.5 2 5 0" fill="none" stroke="currentColor" stroke-width="1.4"/>',
   body: '<circle cx="12" cy="4.5" r="2.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M12 7v7M8 10h8M12 14l-3 7M12 14l3 7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M20 4v16M18.5 6 20 4l1.5 2M18.5 18l1.5 2 1.5-2" fill="none" stroke="currentColor" stroke-width="1.2"/>',
   skin: '<path d="M12 3c3 4 6 7 6 10.5a6 6 0 0 1-12 0C6 10 9 7 12 3z" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M9.5 14a2.5 2.5 0 0 0 2.5 2.5" fill="none" stroke="currentColor" stroke-width="1.4"/>',
+  lens: '<circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M12 3.5 15 9M20.5 12 15 14.5M12 20.5 9 15M3.5 12 9 9.5" stroke="currentColor" stroke-width="1.1"/>',
   crop: '<path d="M7 3v14h14M3 7h14v14" fill="none" stroke="currentColor" stroke-width="1.6"/>',
 };
 const TABS = [
   ['looks', 'Kiểu'], ['profile', 'Profile'], ['light', 'Ánh sáng'], ['color', 'Màu'], ['presence', 'Hiện diện'],
   ['hsl', 'HSL'], ['curve', 'Đường cong'], ['grading', 'Chỉnh màu'], ['face', 'Khuôn mặt'], ['body', 'Dáng người'], ['skin', 'Da'], ['selective', 'Chọn lọc'], ['gradient', 'Gradient'],
-  ['detail', 'Chi tiết'], ['effects', 'Hiệu ứng'], ['calibration', 'Hiệu chuẩn'], ['crop', 'Cắt xoay'],
+  ['lens', 'Ống kính'], ['detail', 'Chi tiết'], ['effects', 'Hiệu ứng'], ['calibration', 'Hiệu chuẩn'], ['crop', 'Cắt xoay'],
 ];
 
 // ---- state ------------------------------------------------------------------
@@ -442,7 +443,7 @@ function resetKeys(keys) {
 // (picking a look/recipe/profile re-renders the same panel).
 function renderPanel() {
   const panel = $('#panel'), body0 = $('#panelBody');
-  const key = state.tab + '|' + (state.profTab || '') + '|' + state.bodyMode;
+  const key = state.tab + '|' + (state.profTab || '') + '|' + state.bodyMode + '|' + (state.lensTab || '');
   const keep = renderPanel._key === key;
   const top = panel.scrollTop;
   const lefts = [...body0.querySelectorAll('.looks, .chips')].map((e) => e.scrollLeft);
@@ -471,12 +472,12 @@ function renderPanelInner() {
     return;
   }
   ({ looks: panelLooks, profile: panelProfile, hsl: panelHsl, curve: panelCurve, selective: panelSelective,
-    gradient: panelGradient, crop: panelCrop, face: panelFace, body: panelBody, skin: panelSkin })[t](body);
+    gradient: panelGradient, crop: panelCrop, face: panelFace, body: panelBody, skin: panelSkin, lens: panelLens })[t](body);
 }
 
 // ---- Looks (presets) ------------------------------------------------------------
 function applyPreset(params, id) {
-  const keepGeo = ['rotate90', 'flipH', 'straighten', 'aspect', 'zoom', 'panX', 'panY', 'faces', 'body', 'boxes', 'pushes', 'skin'];
+  const keepGeo = ['rotate90', 'flipH', 'straighten', 'aspect', 'zoom', 'panX', 'panY', 'faces', 'body', 'boxes', 'pushes', 'skin', 'lens', 'lensBlur', 'fill', 'expand'];
   const next = Object.assign(defaultParams(), clone(params));
   for (const k of keepGeo) next[k] = state.params[k];
   if (next.profile === 'custom' && !state.customLut) next.profile = '';
@@ -638,11 +639,11 @@ function panelProfile(body) {
     const r = state.params.recipe;
     const upd = () => { ensureLut(); render(); };
     const sel = (label, key, opts) => {
-      const s = el('select', { class: 'sel', onchange: (e) => { r[key] = isNaN(+e.target.value) || e.target.value === '' ? e.target.value : +e.target.value; upd(); commit(); renderPanel(); } },
+      const s = el('select', { class: 'fsel', onchange: (e) => { r[key] = isNaN(+e.target.value) || e.target.value === '' ? e.target.value : +e.target.value; upd(); commit(); renderPanel(); } },
         ...opts.map(([v, n]) => el('option', { value: v, selected: String(r[key]) === String(v) }, n)));
       return el('label', { class: 'field' }, el('span', {}, label), s);
     };
-    const nameIn = el('input', { class: 'sel', value: r.name, onchange: (e) => { r.name = e.target.value; commit(); } });
+    const nameIn = el('input', { class: 'fsel', value: r.name, onchange: (e) => { r.name = e.target.value; commit(); } });
     body.append(el('label', { class: 'field' }, el('span', {}, 'Tên'), nameIn));
     body.append(sel('Giả lập phim', 'film', FILM_SIMS));
     body.append(sel('Dải động', 'dr', [[100, 'DR100'], [200, 'DR200'], [400, 'DR400']]));
@@ -882,6 +883,53 @@ function panelBody(body) {
   }
 }
 
+// ---- Lens: perspective, distortion, lens blur, edge fill & expand ------------------------
+const FILLS = [['mirror-blur', 'Phản chiếu + mờ'], ['mirror', 'Phản chiếu'], ['edge', 'Kéo dài mép'], ['black', 'Đen'], ['white', 'Trắng']];
+function panelLens(body) {
+  const p = state.params, L = p.lens, B = p.lensBlur;
+  const sub = state.lensTab || 'persp';
+  const head = el('div', { class: 'chips' });
+  [['persp', 'Phối cảnh'], ['distort', 'Méo & viền màu'], ['blur', 'Làm mờ ống kính'], ['fill', 'Rìa & mở rộng']].forEach(([k, n]) =>
+    head.append(el('button', { class: 'chip' + (sub === k ? ' active' : ''), onclick: () => { state.lensTab = k; renderPanel(); drawOverlay(); } }, n)));
+  body.append(head);
+  const d = (label, obj, key, min, max, step, def = 0, after) => ({ label, min, max, step, def, get: () => obj[key], set: (v) => { obj[key] = v; if (after) after(); } });
+  if (sub === 'persp') {
+    compactSliders(body, 'lens-persp', [
+      d('Dọc (dựng thẳng)', L, 'persV', -100, 100, 1),
+      d('Ngang', L, 'persH', -100, 100, 1),
+      d('Xoay thẳng', p, 'straighten', -45, 45, 0.1, 0, layout),
+      d('Phóng to (che rìa)', L, 'zoom', 1, 2, 0.01, 1),
+    ]);
+    body.append(el('p', { class: 'hint' }, 'Kéo "Dọc" để dựng thẳng cột, nhà bị chụm khi chụp ngước. Phần rìa bị hở sẽ được lấp theo mục "Rìa & mở rộng", hoặc tăng "Phóng to" để cắt bỏ.'));
+  } else if (sub === 'distort') {
+    compactSliders(body, 'lens-distort', [
+      d('Méo ống kính', L, 'distort', -100, 100, 1),
+      d('Viền màu (quang sai)', L, 'ca', -100, 100, 1),
+    ]);
+    body.append(el('p', { class: 'hint' }, 'Méo âm = sửa méo phình (ống góc rộng), dương = hiệu ứng mắt cá nhẹ. Viền màu tạo/khử viền tím-xanh ở mép như ống kính cổ.'));
+  } else if (sub === 'blur') {
+    body.append(el('div', { class: 'row', style: 'margin:0 0 6px' },
+      el('button', { class: 'btn small' + (B.on ? ' on' : ''), onclick: () => { B.on = !B.on; render(); commit(); renderPanel(); drawOverlay(); } }, B.on ? 'Đang bật' : 'Bật làm mờ'),
+      el('button', { class: 'chip' + (B.shape === 'radial' ? ' active' : ''), onclick: () => { B.shape = 'radial'; render(); commit(); renderPanel(); drawOverlay(); } }, 'Tròn'),
+      el('button', { class: 'chip' + (B.shape === 'linear' ? ' active' : ''), onclick: () => { B.shape = 'linear'; render(); commit(); renderPanel(); drawOverlay(); } }, 'Dải (tilt-shift)')));
+    const defs = [
+      d('Độ mờ', B, 'amount', 0, 100, 1),
+      d('Vùng nét', B, 'r', 0.02, 0.8, 0.01, 0.18, drawOverlay),
+      d('Chuyển tiếp', B, 'feather', 0.02, 0.8, 0.01, 0.22, drawOverlay),
+      d('Bokeh sáng', B, 'bokeh', 0, 100, 1),
+    ];
+    if (B.shape === 'linear') defs.push(d('Góc dải', B, 'angle', -90, 90, 1, 0, drawOverlay));
+    compactSliders(body, 'lens-blur', defs);
+    body.append(el('p', { class: 'hint' }, 'Chạm/kéo trên ảnh để đặt tâm vùng nét (vòng liền = nét, vòng đứt = mờ hẳn). Chụm 2 ngón để phóng to xem.'));
+  } else {
+    const chips = el('div', { class: 'chips' });
+    FILLS.forEach(([k, n]) => chips.append(el('button', { class: 'chip' + ((p.fill || 'mirror-blur') === k ? ' active' : ''), onclick: () => { p.fill = k; render(); commit(); renderPanel(); } }, n)));
+    body.append(el('div', { class: 'sect', style: 'margin-top:0' }, 'Lấp phần rìa bị thiếu'), chips);
+    compactSliders(body, 'lens-fill', [d('Mở rộng khung (%)', p, 'expand', 0, 40, 1, 0, layout)]);
+    body.append(el('p', { class: 'hint' }, 'Khi kéo dãn, xoay, chỉnh phối cảnh hoặc mở rộng khung làm hở mép ảnh, phần thiếu sẽ được lấp theo kiểu đã chọn. "Phản chiếu + mờ" tự nhiên nhất cho nền trời, lá, tường.'));
+  }
+}
+
 // ---- Portrait: skin ----------------------------------------------------------------
 function panelSkin(body) {
   const sk = state.params.skin;
@@ -913,6 +961,20 @@ function drawOverlay() {
     ov.append(el('div', { class: 'gline end', style: `top:${g.y1 * H}px` }, el('span', {}, '0')));
   } else if (state.tab === 'crop') {
     ov.append(el('div', { class: 'cropgrid' }));
+  } else if (state.tab === 'lens' && state.lensTab === 'blur' && state.params.lensBlur.on) {
+    const B = state.params.lensBlur, x = B.x * W, y = B.y * H;
+    if (B.shape === 'linear') {
+      for (const [rr, cls] of [[B.r, ''], [B.r + B.feather, ' end']]) for (const sg of [-1, 1]) {
+        const a = (B.angle * Math.PI) / 180, nx = -Math.sin(a), ny = Math.cos(a);
+        ov.append(el('div', { class: 'lbline' + cls, style: `left:${x + nx * sg * rr * H}px;top:${y + ny * sg * rr * H}px;transform:translate(-50%,-50%) rotate(${B.angle}deg)` }));
+      }
+    } else {
+      for (const [rr, cls] of [[B.r, ''], [B.r + B.feather, ' end']]) {
+        const R = rr * H;
+        ov.append(el('div', { class: 'lbring' + cls, style: `left:${x - R}px;top:${y - R}px;width:${2 * R}px;height:${2 * R}px` }));
+      }
+    }
+    ov.append(el('div', { class: 'pt sel', style: `left:${x}px;top:${y}px` }, '◎'));
   } else if (state.tab === 'face') {
     const p = state.params, Hc = H / outHeightScale(p);
     p.faces.forEach((f, i) => {
@@ -968,6 +1030,8 @@ function drawOverlay() {
       mode = { t: 'grad', k: d0 <= d1 ? 'y0' : 'y1' };
     } else if (state.tab === 'crop') {
       mode = { t: 'pan', px: state.params.panX, py: state.params.panY };
+    } else if (state.tab === 'lens' && state.lensTab === 'blur' && state.params.lensBlur.on) {
+      mode = { t: 'lb' }; state.params.lensBlur.x = x; state.params.lensBlur.y = y; drawOverlay(); render();
     } else if (state.tab === 'face') {
       mode = faceDown(x, y, r);
     } else if (state.tab === 'body') {
@@ -984,6 +1048,8 @@ function drawOverlay() {
       p.col = null; drawOverlay(); render();
     } else if (mode.t === 'grad') {
       state.params.grad[mode.k] = Math.min(1, Math.max(0, y)); drawOverlay(); render();
+    } else if (mode.t === 'lb') {
+      state.params.lensBlur.x = Math.min(1, Math.max(0, x)); state.params.lensBlur.y = Math.min(1, Math.max(0, y)); drawOverlay(); render();
     } else if (mode.t && mode.t.startsWith('f-') || mode.t && mode.t.startsWith('b-')) {
       portraitMove(mode, x, y, r, e);
     } else if (mode.t === 'pan') {
@@ -1026,7 +1092,7 @@ function drawOverlay() {
       state.selBox = p.boxes.length - 1; render(); commit(); renderPanel(); drawOverlay();
     } else if (mode.t === 'b-push') {
       state.brushPos = null; drawOverlay(); commit(); renderPanel();
-    } else if (mode.t === 'grad' || mode.t === 'pan' || (mode.t.startsWith('f-') || mode.t.startsWith('b-')) && moved) commit();
+    } else if (mode.t === 'grad' || mode.t === 'pan' || mode.t === 'lb' || (mode.t.startsWith('f-') || mode.t.startsWith('b-')) && moved) commit();
     mode = null;
   });
 })();
@@ -1131,7 +1197,7 @@ function portraitMove(mode, x, y, r) {
       return;
     }
     if (pts.size === 1) {
-      const tool = TOOL_TABS.includes(state.tab) && e.target.closest('#overlay');
+      const tool = (TOOL_TABS.includes(state.tab) || (state.tab === 'lens' && state.lensTab === 'blur' && state.params.lensBlur.on)) && e.target.closest('#overlay');
       one = { x: e.clientX, y: e.clientY, tx: state.view.tx, ty: state.view.ty, tool, mode: null, v0: 0, moved: false };
     }
   }, true);
