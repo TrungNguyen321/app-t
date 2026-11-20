@@ -157,3 +157,11 @@ input, select, textarea, .fsel { font-size: 16px !important; }
 #menuDlg .look .btn { height: 26px; font-size: 11px; padding: 0 6px; width: 88px; justify-content: center; }
 #menuDlg .looks { grid-auto-columns: 96px; }
 #toast .btn { color: var(--acc2); }
+
+/* free crop */
+.cshade { position: absolute; background: #000a; pointer-events: none; }
+.chdl { position: absolute; width: 24px; height: 24px; margin: -12px 0 0 -12px; border: 3px solid #fff; scale: var(--inv, 1); pointer-events: none; }
+.chdl.c-tl { border-right: 0; border-bottom: 0; } .chdl.c-tr { border-left: 0; border-bottom: 0; }
+.chdl.c-bl { border-right: 0; border-top: 0; } .chdl.c-br { border-left: 0; border-top: 0; }
+.ehdl { position: absolute; background: #fff; border-radius: 2px; pointer-events: none; scale: var(--inv, 1); box-shadow: 0 0 2px #000; }
+.ehdl.e-h { width: 26px; height: 4px; margin: -2px 0 0 -13px; } .ehdl.e-v { width: 4px; height: 26px; margin: -13px 0 0 -2px; }

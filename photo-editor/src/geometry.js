@@ -1,29 +1,37 @@
 // Crop / rotate / straighten / flip -> affine map from output uv to source uv.
 
 export const ASPECTS = [
-  { label: 'Gốc', v: 0 }, { label: '1:1', v: 1 }, { label: '4:5', v: 4 / 5 }, { label: '3:4', v: 3 / 4 },
+  { label: 'Tự do', v: -1 }, { label: 'Gốc', v: 0 }, { label: '1:1', v: 1 }, { label: '4:5', v: 4 / 5 }, { label: '3:4', v: 3 / 4 },
   { label: '2:3', v: 2 / 3 }, { label: '9:16', v: 9 / 16 }, { label: '3:2', v: 3 / 2 }, { label: '16:9', v: 16 / 9 },
 ];
 
 /**
+ * @param opts.ignoreRect  show the whole (rotated/straightened) frame while the free crop is edited
  * @returns {{geo: Float32Array, cw: number, ch: number}} cw/ch = crop size in source pixels
  */
-export function computeGeometry(p, srcW, srcH) {
+export function computeGeometry(p, srcW, srcH, opts = {}) {
   const k = ((p.rotate90 % 4) + 4) % 4;
   const W = k % 2 ? srcH : srcW, H = k % 2 ? srcW : srcH;
-  const A = p.aspect || W / H;
+  const A = p.aspect > 0 ? p.aspect : W / H;          // 0 = original, -1 = free (rect below)
   let cw, ch;
   if (A > W / H) { cw = W; ch = W / A; } else { ch = H; cw = H * A; }
-  const th = (p.straighten * Math.PI) / 180, c = Math.cos(th), s = Math.abs(Math.sin(th));
+  const th = (p.straighten * Math.PI) / 180, c = Math.cos(th), s = Math.abs(Math.sin(th)), sn = Math.sin(th);
   const f = Math.min(1, W / (cw * c + ch * s), H / (cw * s + ch * c));
   cw *= f / p.zoom; ch *= f / p.zoom;
+  const bbW = cw * c + ch * s, bbH = cw * s + ch * c;
+  let cx = W / 2 + p.panX * Math.max(0, (W - bbW) / 2);
+  let cy = H / 2 + p.panY * Math.max(0, (H - bbH) / 2);
+  // free crop: a sub-rectangle (0..1) of that window
+  const r = p.aspect === -1 && p.cropRect && !opts.ignoreRect ? p.cropRect : null;
+  if (r) {
+    const mx = (r.x0 + r.x1) / 2 - 0.5, my = (r.y0 + r.y1) / 2 - 0.5;
+    cx += c * mx * cw - sn * my * ch;
+    cy += sn * mx * cw + c * my * ch;
+    cw *= Math.max(0.02, r.x1 - r.x0); ch *= Math.max(0.02, r.y1 - r.y0);
+  }
   // 'Mở rộng khung': grow the window beyond the photo; the shader fills the new border
   const ex = 1 + 2 * (p.expand || 0) / 100;
   cw *= ex; ch *= ex;
-  const bbW = cw * c + ch * s, bbH = cw * s + ch * c;
-  const cx = W / 2 + p.panX * Math.max(0, (W - bbW) / 2);
-  const cy = H / 2 + p.panY * Math.max(0, (H - bbH) / 2);
-  const sn = Math.sin(th);
 
   const map = (u, v) => {
     const dx = (u - 0.5) * cw, dy = (v - 0.5) * ch;
