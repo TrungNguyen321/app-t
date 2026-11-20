@@ -1438,6 +1438,17 @@ async function renderMenu() {
       e.thumb ? el('img', { src: e.thumb, alt: '' }) : el('div', { class: 'ph' }),
       el('span', {}, e.name),
       el('button', { class: 'btn small', disabled: !state.img, onclick: () => { state.params = sanitizeParams(e.params); commit(); ensureLut(); layout(); render(); renderPanel(); toast('Đã áp bản chỉnh này cho ảnh đang mở'); } }, 'Áp vào ảnh này'),
+      el('button', { class: 'btn small', onclick: () => {
+        const params = sanitizeParams(e.params);
+        params.points = []; params.faces = []; params.boxes = []; params.pushes = []; params.body = defaultParams().body;
+        const name = safeName(e.name).slice(-18);
+        state.userPresets.push({ id: 'u' + Date.now(), name, params }); saveUserPresets(); if (state.img) makeThumbs();
+        toast(`Đã lưu thành Kiểu "${name}" — xem ở tab Kiểu`, 4000);
+      } }, 'Lưu thành Kiểu'),
+      el('button', { class: 'btn small', onclick: async () => {
+        const text = JSON.stringify({ format: 'fuji-raw-editor-edit', version: 1, name: e.name, key: e.key, params: e.params }, null, 1);
+        if ((await saveJson(text, safeName(e.name) + '.chinh')) === 'saved') toast('Đã lưu file bản chỉnh');
+      } }, 'Lưu ra file'),
       el('button', { class: 'btn small danger', onclick: async () => { await store.deleteEdit(e.key); renderMenu(); } }, 'Xoá')));
   }
   if (edits.length) body.append(eg);
@@ -1456,10 +1467,13 @@ store.persist();
 // ---- export ----------------------------------------------------------------------------
 const dlg = $('#exportDlg');
 $('#expQ').addEventListener('input', () => { $('#expQv').textContent = $('#expQ').value; });
+$('#expSize').addEventListener('change', () => { $('#expSize').dataset.touched = '1'; });
 $('#btnExport').onclick = () => {
   if (!state.img) return;
   const [fw, fh] = fullSize(state.img);
   const { cw, ch } = geomFor(state.params, fw, fh);
+  // phones: default to 4096 px for big images (full 30+ MP exports can exhaust Safari's GPU memory)
+  if (matchMedia('(pointer: coarse)').matches && Math.max(cw, ch) > 4096 && !$('#expSize').dataset.touched) $('#expSize').value = '4096';
   $('#expInfo').textContent = `Kích thước đầy đủ: ${Math.round(cw)}×${Math.round(ch)} px` + (state.img.isRaw && state.half ? ' (RAW giải mã ½ để chạy nhẹ trên điện thoại)' : '');
   dlg.showModal();
 };
@@ -1514,10 +1528,13 @@ async function doExport(maxSide, quality) {
     const cv = renderer.renderTiledToCanvas(fullSrc, effectiveParams(state.params), { geo, aspectC, outW: ow, outH: oh, detailScale: Math.max(1, cw / ow), isRaw: img.isRaw });
     renderer.deleteSource(fullSrc); fullSrc = null;
     const blob = await new Promise((res, rej) => cv.toBlob((b) => (b ? res(b) : rej(new Error('Không tạo được JPEG'))), 'image/jpeg', quality));
+    const tcv = document.createElement('canvas'), ts = 160 / Math.max(ow, oh);
+    tcv.width = Math.max(1, Math.round(ow * ts)); tcv.height = Math.max(1, Math.round(oh * ts));
+    tcv.getContext('2d').drawImage(cv, 0, 0, tcv.width, tcv.height);
     cv.width = cv.height = 1;
     const base = img.name.replace(/\.[^.]+$/, '');
     showStatus('');
-    store.addExport({ id: 'x' + Date.now(), name: `${base}-edit.jpg`, blob, w: ow, h: oh, date: Date.now(), thumb: smallThumb() });
+    store.addExport({ id: 'x' + Date.now(), name: `${base}-edit.jpg`, blob, w: ow, h: oh, date: Date.now(), thumb: tcv.toDataURL('image/jpeg', 0.7) });
     const r = await saveBlob(blob, `${base}-edit.jpg`);
     toast(r === 'saved' ? `Đã xuất ${ow}×${oh} (${(blob.size / 1048576).toFixed(1)} MB)` : 'Đã huỷ lưu');
   } catch (e) {
