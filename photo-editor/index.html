@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#111111" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>Fuji RAW Editor</title>
+  <link rel="stylesheet" href="./src/style.css" />
+</head>
+<body>
+  <header id="top">
+    <label class="btn" id="btnOpen" title="Mở ảnh">
+      <svg viewBox="0 0 24 24"><path d="M4 5h5l2 2h9v12H4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+      <span>Mở</span>
+      <input type="file" id="fileInput" accept="image/*,.arw,.srf,.sr2,.cr2,.cr3,.crw,.nef,.nrw,.dng,.raf,.orf,.rw2,.rwl,.pef,.srw,.x3f,.3fr,.fff,.iiq,.erf,.mef,.mos,.mrw,.kdc,.dcr,.raw,.heic,.heif" hidden />
+    </label>
+    <div class="spacer"></div>
+    <button class="btn icon" id="btnUndo" title="Hoàn tác" disabled>
+      <svg viewBox="0 0 24 24"><path d="M9 7 4 12l5 5M4 12h11a5 5 0 0 1 0 10h-3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <button class="btn icon" id="btnRedo" title="Làm lại" disabled>
+      <svg viewBox="0 0 24 24"><path d="m15 7 5 5-5 5M20 12H9a5 5 0 0 0 0 10h3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <button class="btn icon" id="btnCompare" title="Giữ để xem ảnh gốc" disabled>
+      <svg viewBox="0 0 24 24"><path d="M12 3v18M5 5h14v14H5z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 5h7v14h-7z" fill="currentColor" opacity=".35"/></svg>
+    </button>
+    <button class="btn primary" id="btnExport" disabled>Xuất</button>
+  </header>
+
+  <main id="stage">
+    <div id="empty">
+      <div class="logo">F</div>
+      <h1>Fuji RAW Editor</h1>
+      <p>Mở ảnh RAW (ARW, DNG, CR2/CR3, NEF, RAF…) hoặc JPEG / HEIC để bắt đầu chỉnh.</p>
+      <label class="btn primary big" for="fileInput">Chọn ảnh</label>
+      <label class="opt"><input type="checkbox" id="optFull" /> Giải mã RAW độ phân giải đầy đủ (chậm hơn, tốn RAM; mặc định ½ cho điện thoại)</label>
+    </div>
+    <div id="viewWrap" hidden>
+      <canvas id="view"></canvas>
+      <div id="overlay"></div>
+    </div>
+    <canvas id="hist" width="128" height="48" hidden></canvas>
+    <div id="status" hidden></div>
+  </main>
+
+  <section id="panel"><div id="panelBody"></div></section>
+  <nav id="tabs"></nav>
+
+  <dialog id="exportDlg">
+    <form method="dialog" id="exportForm">
+      <h3>Xuất ảnh JPEG</h3>
+      <label>Kích thước
+        <select id="expSize">
+          <option value="0">Đầy đủ</option>
+          <option value="4096">Cạnh dài 4096 px</option>
+          <option value="2048">Cạnh dài 2048 px (mạng xã hội)</option>
+        </select>
+      </label>
+      <label>Chất lượng <input type="range" id="expQ" min="70" max="100" value="95" /><span id="expQv">95</span></label>
+      <p class="hint" id="expInfo"></p>
+      <div class="row">
+        <button value="cancel" class="btn">Huỷ</button>
+        <button value="ok" class="btn primary" id="expGo">Xuất ảnh</button>
+      </div>
+    </form>
+  </dialog>
+  <div id="toast" hidden></div>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
