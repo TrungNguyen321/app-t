@@ -7,6 +7,7 @@ import { PROFILES, buildProfileLUT, parseCube } from './profiles.js';
 import { evalCurve } from './curves.js';
 import { RECIPES, FILM_SIMS, WB_MODES, LEVEL3, blankRecipe, effectiveParams, recipeSummary, makeProfileFile, parseProfileFile } from './recipes.js';
 import { DispCache, DISP_N } from './liquify.js';
+import { tick as haptic, hapticsOn, setHaptics } from './haptics.js';
 
 const dispCache = new DispCache();
 let dispKey = '';
@@ -295,6 +296,85 @@ function slider(label, min, max, step, get, set, { def = 0, hue = false } = {}) 
   return el('div', { class: 'slider' + (hue ? ' hue' : '') }, lab, val, inp);
 }
 /**
+ * Tick-mark ruler ("răng cưa") with a fixed centre needle. Drag the ruler; each tick gives a
+ * light haptic, major ticks and the default value give a stronger one, and the default value
+ * is a sticky detent so you don't overshoot it.
+ */
+const TICK_PX = 9;
+class Ruler {
+  constructor(onInput, onCommit) {
+    this.onInput = onInput; this.onCommit = onCommit;
+    this.cv = el('canvas', { class: 'ruler-cv' });
+    this.el = el('div', { class: 'ruler' }, this.cv, el('div', { class: 'ruler-needle' }));
+    this.v = 0;
+    let drag = null;
+    this.el.addEventListener('pointerdown', (e) => {
+      this.el.setPointerCapture(e.pointerId);
+      drag = { x: e.clientX, v0: this.v, moved: false };
+    });
+    this.el.addEventListener('pointermove', (e) => {
+      if (!drag) return;
+      const dx = e.clientX - drag.x;
+      if (Math.abs(dx) > 2) drag.moved = true;
+      this.setValue(drag.v0 - (dx / TICK_PX) * this.u, true);
+      this.onInput(this.v);
+    });
+    const up = () => { if (drag && drag.moved) this.onCommit(); drag = null; };
+    this.el.addEventListener('pointerup', up);
+    this.el.addEventListener('pointercancel', up);
+    new ResizeObserver(() => this.draw()).observe(this.el);
+  }
+  setDef(d) {
+    this.d = d;
+    const n = (d.max - d.min) / d.step;
+    this.u = d.step * Math.max(1, Math.ceil(n / 200));
+    this.v = d.get(); this.draw();
+  }
+  /** set value (raw, unquantised); with feedback=true apply detent + haptics */
+  setValue(raw, feedback = false) {
+    const d = this.d, def = d.def || 0, u = this.u;
+    let v = Math.min(d.max, Math.max(d.min, raw));
+    if (feedback && Math.abs(v - def) < u * 1.6) v = def;           // sticky zero / default
+    v = Math.round(v / d.step) * d.step;
+    v = +v.toFixed(6);
+    if (feedback) {
+      const a = Math.round(this.v / u), b = Math.round(v / u);
+      if (a !== b) {
+        const major = Math.round(v / u) % 10 === 0;
+        haptic(v === def || major || v === d.min || v === d.max ? 'strong' : 'light');
+      }
+    }
+    this.v = v; this.draw();
+    return v;
+  }
+  draw() {
+    const cv = this.cv, W = this.el.clientWidth, H = this.el.clientHeight;
+    if (!W || !this.d) return;
+    const dpr = Math.min(3, window.devicePixelRatio || 1);
+    if (cv.width !== Math.round(W * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+    const ctx = cv.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    const d = this.d, u = this.u, def = d.def || 0, cx = W / 2;
+    const first = Math.ceil((d.min - 1e-9) / u), last = Math.floor((d.max + 1e-9) / u);
+    const off = this.v / u;                                    // tick index under the needle
+    ctx.font = '10px -apple-system, system-ui, sans-serif'; ctx.textAlign = 'center';
+    for (let k = first; k <= last; k++) {
+      const x = cx + (k - off) * TICK_PX;
+      if (x < -20 || x > W + 20) continue;
+      const val = k * u, major = k % 10 === 0, isDef = Math.abs(val - def) < u / 2;
+      const fade = 1 - Math.min(1, Math.abs(x - cx) / (W / 2)) * 0.75;
+      const inRange = (val - def) * (this.v - def) > 0 && Math.abs(val - def) <= Math.abs(this.v - def) + 1e-9;
+      ctx.strokeStyle = inRange ? `rgba(127,224,211,${fade})` : `rgba(255,255,255,${fade * (major ? 0.9 : 0.5)})`;
+      ctx.lineWidth = isDef ? 2 : major ? 1.6 : 1;
+      const h = isDef ? 22 : major ? 16 : 9;
+      ctx.beginPath(); ctx.moveTo(x, H - 8 - h); ctx.lineTo(x, H - 8); ctx.stroke();
+      if (major && Math.abs(x - cx) > 16) { ctx.fillStyle = `rgba(255,255,255,${fade * 0.6})`; ctx.fillText(fmt(val, d.step), x, H - 8 - h - 4); }
+    }
+  }
+}
+
+/**
  * Snapseed-style compact control: a strip of parameter chips + one big slider.
  * defs: [{label, min, max, step, get, set, def, hue}]
  */
@@ -308,7 +388,7 @@ function compactSliders(body, id, defs, extraTitle) {
   let i = Math.min(state.activeParam[id] || 0, defs.length - 1);
   const chips = el('div', { class: 'chips params' });
   const big = el('div', { class: 'bigval' });
-  const inp = el('input', { type: 'range' });
+  const ruler = new Ruler((v) => { defs[i].set(v); upd(); render(); }, commit);
   const chipEls = defs.map((d, k) => {
     const c = el('button', { class: 'chip' + (k === i ? ' active' : ''), onclick: () => select(k) }, d.label, el('b', {}));
     chips.append(c); return c;
@@ -327,27 +407,23 @@ function compactSliders(body, id, defs, extraTitle) {
   const select = (k) => {
     i = k; state.activeParam[id] = k;
     chipEls.forEach((c, j) => c.classList.toggle('active', j === k));
-    const d = defs[k];
-    Object.assign(inp, { min: d.min, max: d.max, step: d.step });
-    inp.value = d.get();
-    inp.parentElement && inp.parentElement.classList.toggle('hue', !!d.hue);
+    ruler.setDef(defs[k]);
     chipEls[k].scrollIntoView({ block: 'nearest', inline: 'center' });
     upd();
   };
-  inp.addEventListener('input', () => { defs[i].set(parseFloat(inp.value)); upd(); render(); });
-  inp.addEventListener('change', commit);
-  big.addEventListener('dblclick', () => { const d = defs[i]; d.set(d.def || 0); inp.value = d.def || 0; upd(); render(); commit(); });
+  big.addEventListener('dblclick', () => { const d = defs[i]; d.set(d.def || 0); ruler.setValue(d.def || 0); upd(); render(); commit(); });
   const head = el('div', { class: 'row', style: 'margin:0 0 2px;justify-content:space-between' }, big,
     el('div', { class: 'row', style: 'margin:0' }, extraTitle || null,
+      el('button', { class: 'btn small' + (hapticsOn ? ' on' : ''), title: 'Rung khi qua vạch', onclick: (e) => { setHaptics(!hapticsOn); e.currentTarget.classList.toggle('on', hapticsOn); if (hapticsOn) haptic('strong'); } }, '〰'),
       el('button', { class: 'btn small', title: 'Hiện tất cả thanh', onclick: () => { state.compact = false; renderPanel(); } }, '≡')));
-  const sl = el('div', { class: 'slider compact' }, inp);
+  const sl = el('div', { class: 'slider compact' }, ruler.el);
   body.append(head, sl, chips);
   select(i);
   // expose to the on-image swipe gesture
   state.swipe = {
     get def() { return defs[i]; },
     next(dir) { select((i + dir + defs.length) % defs.length); },
-    apply(v) { const d = defs[i]; d.set(v); inp.value = v; upd(); render(); },
+    apply(v) { const nv = ruler.setValue(v, true); defs[i].set(nv); upd(); render(); },
   };
 }
 const pDefs = (list) => list.map(([key, label, min, max, step]) => ({
@@ -1082,11 +1158,10 @@ function portraitMove(mode, x, y, r) {
     }
     if (one.mode === 'pan') { state.view.tx = one.tx + dx; state.view.ty = one.ty + dy; applyView(); }
     else if (one.mode === 'adjust') {
-      const d = state.swipe.def, range = d.max - d.min;
-      let v = one.v0 + (dx / st.clientWidth) * range * 0.7;
-      v = Math.round(Math.min(d.max, Math.max(d.min, v)) / d.step) * d.step;
-      state.swipe.apply(+v.toFixed(4));
-      showHud(`${d.label}  ${fmt(v, d.step)}`);
+      const d = state.swipe.def;
+      const u = d.step * Math.max(1, Math.ceil((d.max - d.min) / d.step / 200));
+      state.swipe.apply(one.v0 + (dx / TICK_PX) * u * 0.6);
+      showHud(`${d.label}  ${fmt(d.get(), d.step)}`);
     } else if (one.mode === 'param') {
       const steps = Math.trunc(dy / 36);
       if (steps !== one.steps) { state.swipe.next(steps - one.steps); one.steps = steps; }
