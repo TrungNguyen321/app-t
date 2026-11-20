@@ -292,7 +292,7 @@ export class Renderer {
     const L = p.lens || {};
     gl.uniform4f(u.uLensA, off ? 0 : (L.persV || 0) / 100, off ? 0 : (L.persH || 0) / 100, off ? 1 : (L.zoom || 1), off ? 0 : (L.distort || 0) / 100);
     f('uCA', off ? 0 : (L.ca || 0) / 100);
-    gl.uniform2f(u.uFish, off ? 0 : (L.fisheye || 0) / 100, !off && L.fisheyeCircle && L.fisheye > 0 ? 1 : 0);
+    gl.uniform2f(u.uFish, off ? 0 : (L.fisheye || 0) / 100, 0);   // full-frame fisheye only (no black circle)
     gl.uniform1i(u.uFill, ['black', 'white', 'edge', 'mirror', 'mirror-blur'].indexOf(p.fill || 'mirror-blur'));
     const B = p.lensBlur || {};
     gl.uniform4f(u.uLB, !off && B.on ? 1 : 0, (B.amount || 0) / 100, B.r ?? 0.2, B.feather ?? 0.2);

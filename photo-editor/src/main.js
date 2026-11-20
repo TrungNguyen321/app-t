@@ -988,14 +988,11 @@ function panelLens(body) {
     ]);
     body.append(el('p', { class: 'hint' }, 'Kéo "Dọc" để dựng thẳng cột, nhà bị chụm khi chụp ngước. Phần rìa bị hở sẽ được lấp theo mục "Rìa & mở rộng", hoặc tăng "Phóng to" để cắt bỏ.'));
   } else if (sub === 'fish') {
-    body.append(el('div', { class: 'row', style: 'margin:0 0 6px' },
-      el('button', { class: 'chip' + (!L.fisheyeCircle ? ' active' : ''), onclick: () => { L.fisheyeCircle = false; render(); commit(); renderPanel(); } }, 'Toàn khung'),
-      el('button', { class: 'chip' + (L.fisheyeCircle ? ' active' : ''), onclick: () => { L.fisheyeCircle = true; render(); commit(); renderPanel(); } }, 'Khung tròn')));
     compactSliders(body, 'lens-fish', [
       d('Mắt cá', L, 'fisheye', 0, 100, 1),
       d('Phóng to', L, 'zoom', 1, 2, 0.01, 1),
     ]);
-    body.append(el('p', { class: 'hint' }, 'Mắt cá phóng to vùng giữa và bẻ cong mép như ống fisheye. "Khung tròn" cho viền đen tròn kiểu fisheye cổ điển. Hợp ảnh kiến trúc, đường phố, chân dung vui nhộn.'));
+    body.append(el('p', { class: 'hint' }, 'Mắt cá phóng to vùng giữa và bẻ cong mép như ống fisheye, ảnh vẫn kín khung (không viền đen). "Phóng to" để giảm độ cong ở mép.'));
   } else if (sub === 'distort') {
     compactSliders(body, 'lens-distort', [
       d('Méo ống kính', L, 'distort', -100, 100, 1),
