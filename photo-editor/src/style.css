@@ -73,7 +73,7 @@ input[type=range]::-moz-range-thumb { width: 20px; height: 20px; border-radius: 
 .hint { color: var(--dim); font-size: 12px; margin: 6px 0; }
 .sect { margin: 10px 0 4px; color: var(--dim); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
 
-#curveBox { position: relative; width: 100%; max-width: 300px; aspect-ratio: 1; margin: 4px auto; touch-action: none; }
+#curveBox { position: relative; width: min(100%, 20vh, 240px); aspect-ratio: 1; margin: 2px auto; touch-action: none; }
 #curveBox canvas { width: 100%; height: 100%; border-radius: 8px; background: #0f0f11; border: 1px solid var(--line); }
 
 .pt { position: absolute; width: 26px; height: 26px; margin: -13px 0 0 -13px; border-radius: 50%; border: 2px solid #fff; background: #0006; box-shadow: 0 0 0 1px #0008; display: grid; place-items: center; font-size: 11px; font-weight: 700; }
@@ -143,3 +143,11 @@ dialog input[type=range] { flex: 1; }
 .lbring { position: absolute; border: 2px solid #fff; border-radius: 50%; box-shadow: 0 0 0 1px #0007; pointer-events: none; border-width: calc(2px * var(--inv, 1)); }
 .lbring.end, .lbline.end { border-style: dashed; opacity: .8; }
 .lbline { position: absolute; width: 300%; height: 0; border-top: 2px solid #fff; box-shadow: 0 0 2px #000; pointer-events: none; }
+
+/* no page-level zoom: only the photo view zooms */
+html, body { touch-action: manipulation; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; overscroll-behavior: none; }
+body { position: fixed; inset: 0; width: 100%; }
+button, .btn, .chip, .look, #tabs button, label { touch-action: manipulation; -webkit-user-select: none; user-select: none; }
+/* iOS Safari zooms the whole page when a focused field has text < 16px */
+input, select, textarea, .fsel { font-size: 16px !important; }
+#stage, .ruler, #curveBox { touch-action: none; }

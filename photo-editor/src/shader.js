@@ -290,12 +290,14 @@ void main() {
   float L = max(luma(lin), 1e-5);
 
   float ev = log2(L / 0.18), evb = log2(Lb / 0.18);
-  float reg = mix(ev, evb, 0.65);
-  float mh = smoothstep(-0.2, 2.6, reg);
-  float ms = 1.0 - smoothstep(-4.5, -0.6, reg);
+  float reg = mix(ev, evb, 0.4);
+  // tone regions measured in perceived (display) brightness, like Lightroom
+  float pr = toSrgb1(min(0.18 * exp2(reg), 1.0));
+  float mh = smoothstep(0.38, 1.0, pr);
+  float ms = 1.0 - smoothstep(0.04, 0.72, pr);
   float ev2 = ev;
-  ev2 += uHighlights * 1.7 * mh;
-  ev2 += uShadows * 1.7 * ms;
+  ev2 += uHighlights * 1.9 * mh;
+  ev2 += uShadows * 2.2 * ms;
   ev2 += uClarity * 0.55 * (ev - evb) * (1.0 - 0.4 * mh);
   float L2 = 0.18 * exp2(ev2);
   lin *= L2 / L;
@@ -375,12 +377,12 @@ void main() {
     float w = bandWeight(hue, i);
     dH += w * uHslH[i / 4][i % 4]; dS += w * uHslS[i / 4][i % 4]; dL += w * uHslL[i / 4][i % 4];
   }
-  float satW = smoothstep(0.02, 0.25, hsv.y);
+  float satW = smoothstep(0.0, 0.18, hsv.y);
   if (dH != 0.0 || dS != 0.0 || dL != 0.0) {
-    hsv.x = fract(hsv.x + dH * satW * 30.0 / 360.0 + 1.0);
-    hsv.y = clamp(hsv.y * (1.0 + dS), 0.0, 1.0);
+    hsv.x = fract(hsv.x + dH * satW * 45.0 / 360.0 + 1.0);
+    hsv.y = clamp(dS > 0.0 ? hsv.y + (1.0 - hsv.y) * dS * 0.5 * satW + hsv.y * dS * 0.3 : hsv.y * (1.0 + dS), 0.0, 1.0);
     vec3 nc = hsv2rgb(hsv);
-    nc *= 1.0 + dL * 0.45 * satW;
+    nc *= 1.0 + dL * (dL > 0.0 ? 0.7 : 0.6) * satW;
     c = nc;
   }
 

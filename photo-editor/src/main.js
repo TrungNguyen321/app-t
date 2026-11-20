@@ -280,6 +280,15 @@ for (const [id, name] of TABS) {
     el('span', {}, name)));
 }
 
+/** double-tap detection that works even when page-level double-tap zoom is blocked */
+function onDoubleTap(elm, fn) {
+  let t = 0, x = 0, y = 0;
+  elm.addEventListener('pointerup', (e) => {
+    const now = Date.now();
+    if (now - t < 350 && Math.hypot(e.clientX - x, e.clientY - y) < 24) { t = 0; fn(e); }
+    else { t = now; x = e.clientX; y = e.clientY; }
+  });
+}
 function fmt(v, step) { return step < 1 ? (+v).toFixed(2) : String(Math.round(v)); }
 
 /** generic slider bound to getter/setter */
@@ -291,8 +300,8 @@ function slider(label, min, max, step, get, set, { def = 0, hue = false } = {}) 
   inp.addEventListener('change', commit);
   const lab = el('label', { title: 'Chạm 2 lần để đặt lại' }, label);
   const reset = () => { set(def); inp.value = def; upd(); render(); commit(); };
-  lab.addEventListener('dblclick', reset);
-  val.addEventListener('dblclick', reset);
+  onDoubleTap(lab, reset);
+  onDoubleTap(val, reset);
   upd();
   return el('div', { class: 'slider' + (hue ? ' hue' : '') }, lab, val, inp);
 }
@@ -328,7 +337,7 @@ class Ruler {
   setDef(d) {
     this.d = d;
     const n = (d.max - d.min) / d.step;
-    this.u = d.step * Math.max(1, Math.ceil(n / 200));
+    this.u = d.step * Math.max(1, Math.ceil(n / 100));
     this.v = d.get(); this.draw();
   }
   /** set value (raw, unquantised); with feedback=true apply detent + haptics */
@@ -412,7 +421,7 @@ function compactSliders(body, id, defs, extraTitle) {
     chipEls[k].scrollIntoView({ block: 'nearest', inline: 'center' });
     upd();
   };
-  big.addEventListener('dblclick', () => { const d = defs[i]; d.set(d.def || 0); ruler.setValue(d.def || 0); upd(); render(); commit(); });
+  onDoubleTap(big, () => { const d = defs[i]; d.set(d.def || 0); ruler.setValue(d.def || 0); upd(); render(); commit(); });
   const head = el('div', { class: 'row', style: 'margin:0 0 2px;justify-content:space-between' }, big,
     el('div', { class: 'row', style: 'margin:0' }, extraTitle || null,
       el('button', { class: 'btn small' + (hapticsOn ? ' on' : ''), title: 'Rung khi qua vạch', onclick: (e) => { setHaptics(!hapticsOn); e.currentTarget.classList.toggle('on', hapticsOn); if (hapticsOn) haptic('strong'); } }, '〰'),
@@ -705,13 +714,11 @@ function panelHsl(body) {
 
 // ---- Curves -----------------------------------------------------------------------
 function panelCurve(body) {
-  body.append(title('Đường cong', el('button', { class: 'btn small', onclick: () => {
-    state.params.curves[state.curveCh] = [[0, 0], [255, 255]]; render(); commit(); renderPanel();
-  } }, 'Đặt lại kênh')));
-  const chips = el('div', { class: 'chips' });
+  const chips = el('div', { class: 'chips', style: 'margin:0;flex-wrap:nowrap' });
   [['rgb', 'RGB'], ['r', 'Đỏ'], ['g', 'Lục'], ['b', 'Lam']].forEach(([k, n]) =>
     chips.append(el('button', { class: 'chip' + (state.curveCh === k ? ' active' : ''), onclick: () => { state.curveCh = k; renderPanel(); } }, n)));
-  body.append(chips);
+  body.append(el('div', { class: 'row', style: 'margin:0 0 4px;justify-content:space-between;flex-wrap:nowrap' }, chips,
+    el('button', { class: 'btn small', onclick: () => { state.params.curves[state.curveCh] = [[0, 0], [255, 255]]; render(); commit(); renderPanel(); } }, 'Đặt lại')));
   const box = el('div', { id: 'curveBox' });
   const cv = el('canvas', { width: 600, height: 600 });
   box.append(cv); body.append(box);
@@ -1225,7 +1232,7 @@ function portraitMove(mode, x, y, r) {
     if (one.mode === 'pan') { state.view.tx = one.tx + dx; state.view.ty = one.ty + dy; applyView(); }
     else if (one.mode === 'adjust') {
       const d = state.swipe.def;
-      const u = d.step * Math.max(1, Math.ceil((d.max - d.min) / d.step / 200));
+      const u = d.step * Math.max(1, Math.ceil((d.max - d.min) / d.step / 100));
       state.swipe.apply(one.v0 + (dx / TICK_PX) * u * 0.6);
       showHud(`${d.label}  ${fmt(d.get(), d.step)}`);
     } else if (one.mode === 'param') {
@@ -1265,7 +1272,16 @@ function portraitMove(mode, x, y, r) {
     relayoutSoon();
   }, { passive: false });
   // iOS Safari gesture events would zoom the whole page
-  for (const ev of ['gesturestart', 'gesturechange']) document.addEventListener(ev, (e) => e.preventDefault());
+  for (const ev of ['gesturestart', 'gesturechange', 'gestureend']) document.addEventListener(ev, (e) => e.preventDefault(), { passive: false });
+  // block page-level pinch / double-tap zoom anywhere (the photo view has its own zoom)
+  document.addEventListener('touchmove', (e) => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
+  let lastTouchEnd = 0;
+  document.addEventListener('touchend', (e) => {
+    const now = Date.now();
+    if (now - lastTouchEnd < 320 && !e.target.closest('input, select, textarea')) e.preventDefault();
+    lastTouchEnd = now;
+  }, { passive: false });
+  document.addEventListener('dblclick', (e) => e.preventDefault(), { passive: false });
 })();
 
 $('#zoomBadge').addEventListener('click', () => { resetView(); relayoutSoon(); });
