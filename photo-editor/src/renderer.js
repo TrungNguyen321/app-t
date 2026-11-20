@@ -170,6 +170,7 @@ export class Renderer {
    * Draw. target: null = canvas, or {fbo, w, h}. geo: Float32Array(9) mapping output uv -> source uv.
    */
   draw(source, p, { geo, outW, outH, detailScale = 1, isRaw = false, original = false, fbo = null, aspectC = 1 }) {
+    this._isRaw = isRaw;
     const gl = this.gl;
     const { p: prog, u } = this.prog(source.u16);
     gl.useProgram(prog);
@@ -271,6 +272,15 @@ export class Renderer {
     f('uSkinSmooth', off ? 0 : sk.smooth / 100);
     f('uSkinBright', off ? 0 : sk.bright / 100);
     f('uSkinRed', off ? 0 : sk.red / 100);
+    {
+      const dr = p.dr || 100;
+      const wb = wbMultipliers(p.temp, p.tint);
+      const gain = Math.pow(2, p.exposure + (this._isRaw ? 0.35 : 0)) * Math.max(...wb) * (1 + Math.max(0, p.shadows) / 100 * 0.3);
+      const knee = off ? 1 : dr >= 400 ? 0.5 : dr >= 300 ? 0.6 : dr >= 200 ? 0.68 : 1;
+      gl.uniform2f(u.uDRk, Math.max(1.05, gain), knee);
+    }
+    f('uChrome', off ? 0 : p.chrome || 0);
+    f('uChromeBlue', off ? 0 : p.chromeBlue || 0);
   }
 
   /** Render offscreen and read RGBA8 pixels (top row first). */

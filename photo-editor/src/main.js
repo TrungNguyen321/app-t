@@ -5,6 +5,7 @@ import { computeGeometry, ASPECTS, outHeightScale, cropToDisplayV, displayToCrop
 import { BUILTIN_PRESETS, parseXmp } from './presets.js';
 import { PROFILES, buildProfileLUT, parseCube } from './profiles.js';
 import { evalCurve } from './curves.js';
+import { RECIPES, FILM_SIMS, WB_MODES, LEVEL3, blankRecipe, effectiveParams, recipeSummary, makeProfileFile, parseProfileFile } from './recipes.js';
 import { DispCache, DISP_N } from './liquify.js';
 
 const dispCache = new DispCache();
@@ -116,7 +117,7 @@ function afterParamsReplaced() {
 
 // ---- LUT / profile ------------------------------------------------------------
 function ensureLut() {
-  const id = state.params.profile;
+  const id = effectiveParams(state.params).profile;
   let lut = null;
   if (id === 'custom') lut = state.customLut;
   else if (id) lut = state.lutCache[id] || (state.lutCache[id] = buildProfileLUT(id));
@@ -154,7 +155,8 @@ function render() {
     const cv = $('#view');
     const { geo, cw, aspectC } = geomFor(state.params, state.src.w, state.src.h);
     ensureDisp(state.params, aspectC);
-    renderer.draw(state.src, state.params, {
+    ensureLut();
+    renderer.draw(state.src, effectiveParams(state.params), {
       geo, aspectC, outW: cv.width, outH: cv.height, detailScale: Math.max(1, cw / cv.width),
       isRaw: state.img.isRaw, original: state.original,
     });
@@ -300,7 +302,8 @@ function makeThumbs() {
   const ctx = cv.getContext('2d');
   const savedLut = renderer.lut;
   const one = (id, params) => {
-    const p = Object.assign(defaultParams(), clone(params), { rotate90: base.rotate90, flipH: base.flipH, aspect: 1, zoom: 1, panX: 0, panY: 0, straighten: 0, points: [], faces: [], boxes: [], pushes: [], body: defaultParams().body });
+    const p0 = Object.assign(defaultParams(), clone(params), { rotate90: base.rotate90, flipH: base.flipH, aspect: 1, zoom: 1, panX: 0, panY: 0, straighten: 0, points: [], faces: [], boxes: [], pushes: [], body: defaultParams().body });
+    const p = effectiveParams(p0);
     const lut = p.profile && p.profile !== 'custom' ? (state.lutCache[p.profile] ||= buildProfileLUT(p.profile)) : null;
     renderer.setLut(lut);
     const px = renderer.renderToPixels(state.src, p, { geo, aspectC, outW: S, outH: S, detailScale: state.src.w / S, isRaw: state.img.isRaw });
@@ -309,6 +312,7 @@ function makeThumbs() {
   };
   one('__none', defaultParams());
   for (const it of items) one(it.id, it.params);
+  for (const r of RECIPES) one('r:' + r.id, { ...defaultParams(), recipe: r });
   renderer.setLut(savedLut); ensureLut();
   render();
   if (state.tab === 'looks') renderPanel();
@@ -359,27 +363,134 @@ function panelLooks(body) {
   body.append(el('p', { class: 'hint' }, 'Nhập được preset Lightroom/Camera Raw (.xmp): ánh sáng, HSL, đường cong, chỉnh màu, hiệu chuẩn, gradient.'));
 }
 
-// ---- Profile (LUT) ---------------------------------------------------------------
+// ---- Profile: Fuji recipes, LUTs, .profile files ---------------------------------
+function applyProfileData({ name, recipe, params, lut }) {
+  const p = state.params;
+  Object.assign(p, clone(params));
+  p.recipe = recipe;
+  if (lut) { state.customLut = lut; p.profile = 'custom'; renderer.setLut(null); }
+  else if (p.profile === 'custom' && !state.customLut) p.profile = '';
+  state.activeLook = null;
+  ensureLut(); render(); commit(); renderPanel();
+  toast(`Đã áp profile "${name}"`);
+}
+async function importProfileFiles(files) {
+  for (const f of files) {
+    try {
+      const text = await f.text(), lower = f.name.toLowerCase();
+      if (lower.endsWith('.cube')) {
+        state.customLut = parseCube(text, f.name.replace(/\.cube$/i, ''));
+        state.params.profile = 'custom'; renderer.setLut(null); ensureLut(); render(); commit(); renderPanel();
+        toast(`Đã nạp LUT ${state.customLut.size}³`);
+      } else if (lower.endsWith('.xmp')) {
+        const { name, params } = parseXmp(text);
+        state.userPresets.push({ id: 'u' + Date.now(), name, params }); saveUserPresets(); toast(`Đã thêm "${name}" vào Kiểu của bạn`);
+      } else {
+        const data = parseProfileFile(text);
+        if (state.img) applyProfileData(data);
+        const params = Object.assign(defaultParams(), clone(data.params), { recipe: data.recipe });
+        if (!data.lut) state.userPresets.push({ id: 'u' + Date.now(), name: data.name, params });
+        saveUserPresets();
+      }
+    } catch (e) { toast(`${f.name}: ${e.message}`, 5000); }
+  }
+  makeThumbs();
+}
+async function exportProfile() {
+  const r = state.params.recipe;
+  const name = (r && r.name) || 'Profile cua toi';
+  const text = makeProfileFile(name, state.params, state.customLut);
+  const safe = name.replace(/[^\w\- ]+/g, '').trim() || 'profile';
+  const res = await saveBlob(new Blob([text], { type: 'application/json' }), `${safe}.profile`, 'application/json', `${safe}.profile.json`);
+  if (res === 'saved') toast('Đã lưu file .profile');
+}
+
 function panelProfile(body) {
-  body.append(title('Profile màu (LUT 3D)'));
+  const sub = state.profTab || 'recipes';
+  const head = el('div', { class: 'chips' });
+  [['recipes', 'Công thức Fuji'], ['edit', 'Chỉnh công thức'], ['lut', 'Giả lập phim / LUT']].forEach(([k, n]) =>
+    head.append(el('button', { class: 'chip' + (sub === k ? ' active' : ''), onclick: () => { state.profTab = k; renderPanel(); } }, n)));
+  body.append(head);
+  const fileIn = el('input', { type: 'file', accept: '.profile,.json,.cube,.xmp,application/json', multiple: true, hidden: true });
+  fileIn.addEventListener('change', () => importProfileFiles([...fileIn.files]));
+  const ioRow = el('div', { class: 'row' },
+    el('button', { class: 'btn small', onclick: () => fileIn.click() }, 'Nhập .profile / .cube / .xmp'),
+    el('button', { class: 'btn small', disabled: !state.img, onclick: exportProfile }, 'Xuất .profile'), fileIn);
+
+  if (sub === 'recipes') {
+    const cur = state.params.recipe;
+    body.append(el('div', { class: 'looks' },
+      lookCard('__none', 'Không', () => { state.params.recipe = null; render(); commit(); renderPanel(); }),
+      ...RECIPES.map((r) => {
+        const c = lookCard('r:' + r.id, r.name, () => {
+          state.params.recipe = clone(r); state.params.profile = ''; ensureLut(); render(); commit(); renderPanel();
+        });
+        if (cur && cur.id === r.id) c.classList.add('active');
+        return c;
+      })));
+    if (cur) {
+      body.append(el('div', { class: 'recipe-card' },
+        el('div', { class: 'rc-title' }, cur.name, cur.source ? el('span', {}, ' · ' + cur.source) : null),
+        el('div', { class: 'hint', style: 'margin:2px 0 0' }, recipeSummary(cur))));
+    }
+    body.append(ioRow);
+    body.append(el('p', { class: 'hint' }, 'Công thức là một lớp riêng: các thanh Ánh sáng/Màu… bạn chỉnh vẫn được cộng thêm. DR200/DR400 nén vùng sáng mềm như máy Fuji, giảm cháy sáng. Bù sáng trong công thức (dành cho lúc chụp) chỉ áp 1/2 lên ảnh đã chụp.'));
+    return;
+  }
+  if (sub === 'edit') {
+    if (!state.params.recipe) {
+      body.append(el('p', { class: 'hint' }, 'Chưa có công thức. Chọn một công thức ở tab "Công thức Fuji" hoặc tạo mới.'));
+      body.append(el('button', { class: 'btn small', onclick: () => { state.params.recipe = blankRecipe(); render(); commit(); renderPanel(); } }, '+ Tạo công thức mới'));
+      body.append(ioRow);
+      return;
+    }
+    const r = state.params.recipe;
+    const upd = () => { ensureLut(); render(); };
+    const sel = (label, key, opts) => {
+      const s = el('select', { class: 'sel', onchange: (e) => { r[key] = isNaN(+e.target.value) || e.target.value === '' ? e.target.value : +e.target.value; upd(); commit(); renderPanel(); } },
+        ...opts.map(([v, n]) => el('option', { value: v, selected: String(r[key]) === String(v) }, n)));
+      return el('label', { class: 'field' }, el('span', {}, label), s);
+    };
+    const nameIn = el('input', { class: 'sel', value: r.name, onchange: (e) => { r.name = e.target.value; commit(); } });
+    body.append(el('label', { class: 'field' }, el('span', {}, 'Tên'), nameIn));
+    body.append(sel('Giả lập phim', 'film', FILM_SIMS));
+    body.append(sel('Dải động', 'dr', [[100, 'DR100'], [200, 'DR200'], [400, 'DR400']]));
+    body.append(sel('Hạt', 'grain', LEVEL3));
+    body.append(sel('Cỡ hạt', 'grainSize', [['small', 'Nhỏ'], ['large', 'Lớn']]));
+    body.append(sel('Color Chrome', 'chrome', LEVEL3));
+    body.append(sel('Color Chrome Xanh', 'chromeBlue', LEVEL3));
+    body.append(sel('Cân bằng trắng', 'wb', WB_MODES));
+    const rs = (label, key, min, max, step) => slider(label, min, max, step, () => r[key], (v) => { r[key] = v; upd(); });
+    if (r.wb === 'kelvin') body.append(rs('Nhiệt độ (K)', 'kelvin', 2500, 10000, 100));
+    body.append(rs('Dịch WB · Đỏ (R)', 'wbR', -9, 9, 1));
+    body.append(rs('Dịch WB · Lam (B)', 'wbB', -9, 9, 1));
+    body.append(rs('Highlight', 'highlight', -2, 4, 0.5));
+    body.append(rs('Shadow', 'shadow', -2, 4, 0.5));
+    body.append(rs('Màu (Color)', 'color', -4, 4, 1));
+    body.append(rs('Độ nét', 'sharpness', -4, 4, 1));
+    body.append(rs('Khử nhiễu', 'nr', -4, 4, 1));
+    body.append(rs('Clarity', 'clarity', -5, 5, 1));
+    body.append(rs('Bù sáng (EV)', 'exposure', -2, 2, 0.33));
+    body.append(el('div', { class: 'row' },
+      el('button', { class: 'btn small', onclick: () => {
+        const params = clone(state.params); params.points = []; params.faces = []; params.boxes = []; params.pushes = []; params.body = defaultParams().body;
+        if (params.profile === 'custom') params.profile = '';
+        state.userPresets.push({ id: 'u' + Date.now(), name: r.name, params }); saveUserPresets(); makeThumbs(); toast(`Đã lưu "${r.name}" vào Kiểu của bạn`);
+      } }, 'Lưu vào Kiểu'),
+      el('button', { class: 'btn small danger', onclick: () => { state.params.recipe = null; render(); commit(); renderPanel(); } }, 'Bỏ công thức')));
+    body.append(ioRow);
+    return;
+  }
+  // LUT / film simulation profile
   const chips = el('div', { class: 'chips' });
   const pick = (id) => { state.params.profile = id; ensureLut(); render(); commit(); renderPanel(); };
-  chips.append(el('button', { class: 'chip' + (!state.params.profile ? ' active' : ''), onclick: () => pick('') }, 'Không'));
+  chips.append(el('button', { class: 'chip' + (!state.params.profile ? ' active' : ''), onclick: () => pick('') }, state.params.recipe ? 'Theo công thức' : 'Không'));
   for (const [id, P] of Object.entries(PROFILES)) chips.append(el('button', { class: 'chip' + (state.params.profile === id ? ' active' : ''), onclick: () => pick(id) }, P.name.replace(' (phong cách)', '')));
   if (state.customLut) chips.append(el('button', { class: 'chip' + (state.params.profile === 'custom' ? ' active' : ''), onclick: () => pick('custom') }, state.customLut.name));
   body.append(chips);
   body.append(pSlider(['lutAmount', 'Độ đậm profile', 0, 200, 1]));
-  const cubeIn = el('input', { type: 'file', accept: '.cube', hidden: true });
-  cubeIn.addEventListener('change', async () => {
-    const f = cubeIn.files[0]; if (!f) return;
-    try {
-      state.customLut = parseCube(await f.text(), f.name.replace(/\.cube$/i, ''));
-      state.params.profile = 'custom'; renderer.setLut(null); ensureLut(); render(); commit(); renderPanel();
-      toast(`Đã nạp LUT ${state.customLut.size}³`);
-    } catch (e) { toast(e.message, 5000); }
-  });
-  body.append(el('div', { class: 'row' }, el('button', { class: 'btn small', onclick: () => cubeIn.click() }, 'Nhập LUT .cube'), cubeIn));
-  body.append(el('p', { class: 'hint' }, 'Các profile "phong cách" là màu mô phỏng do app tạo, không phải dữ liệu chính thức của Fujifilm. Độ đậm >100 sẽ làm màu mạnh hơn.'));
+  body.append(ioRow);
+  body.append(el('p', { class: 'hint' }, 'Giả lập phim là LUT 3D do app tạo theo phong cách Fuji (không phải dữ liệu chính thức). File .profile chứa công thức + toàn bộ thông số màu + LUT, mở lại được trên máy khác.'));
 }
 
 // ---- HSL ------------------------------------------------------------------------------
@@ -815,19 +926,24 @@ $('#btnExport').onclick = () => {
 };
 dlg.addEventListener('close', () => { if (dlg.returnValue === 'ok') doExport(+$('#expSize').value, +$('#expQ').value / 100); });
 
-async function saveBlob(blob, filename) {
+async function saveBlob(blob, filename, mime = 'image/jpeg', altName = null) {
   // 1) Claude artifact host
   try {
     if (window.claude && window.claude.use) {
       const dl = await window.claude.use('downloads');
-      if (dl) { await dl.save({ filename, data: blob }); return 'saved'; }
+      if (dl) {
+        try { await dl.save({ filename, data: blob }); return 'saved'; } catch (e1) {
+          if (e1 && e1.code === 'rejected_extension' && altName) { await dl.save({ filename: altName, data: blob }); toast('Trình xem chỉ cho lưu đuôi .json — app vẫn mở được file này.', 5000); return 'saved'; }
+          throw e1;
+        }
+      }
     }
   } catch (e) {
     if (e && e.code === 'declined') return 'declined';
     if (e && e.code && e.code !== 'unavailable' && e.code !== 'not_granted') throw new Error(e.message || e.code);
   }
   // 2) Web Share (iOS: "Lưu hình ảnh")
-  const file = new File([blob], filename, { type: 'image/jpeg' });
+  const file = new File([blob], filename, { type: mime });
   if (navigator.canShare && navigator.canShare({ files: [file] })) {
     try { await navigator.share({ files: [file] }); return 'saved'; } catch (e) { if (e.name === 'AbortError') return 'declined'; }
   }
@@ -855,7 +971,8 @@ async function doExport(maxSide, quality) {
     const lim = Math.min(maxSide || Infinity, renderer.maxTex);
     if (Math.max(ow, oh) > lim) { const s = lim / Math.max(ow, oh); ow = Math.round(ow * s); oh = Math.round(oh * s); }
     // scale point radii etc. are in uv space -> resolution independent
-    const px = renderer.renderToPixels(fullSrc, state.params, { geo, aspectC, outW: ow, outH: oh, detailScale: Math.max(1, cw / ow), isRaw: img.isRaw });
+    ensureLut();
+    const px = renderer.renderToPixels(fullSrc, effectiveParams(state.params), { geo, aspectC, outW: ow, outH: oh, detailScale: Math.max(1, cw / ow), isRaw: img.isRaw });
     renderer.deleteSource(fullSrc); fullSrc = null;
     const cv = document.createElement('canvas'); cv.width = ow; cv.height = oh;
     cv.getContext('2d').putImageData(new ImageData(px, ow, oh), 0, 0);

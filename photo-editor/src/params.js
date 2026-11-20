@@ -55,6 +55,10 @@ export function defaultParams() {
     boxes: [],
     pushes: [],
     skin: { smooth: 0, bright: 0, red: 0 },
+    // Dải động & hiệu ứng màu Fuji (thường do công thức đặt)
+    dr: 100, chrome: 0, chromeBlue: 0,
+    // Công thức Fuji đang dùng (lớp riêng, cộng thêm vào các thanh chỉnh)
+    recipe: null,
   };
 }
 
@@ -71,6 +75,7 @@ export const PANELS = {
       ['shadows', 'Vùng tối', -100, 100, 1],
       ['whites', 'Trắng', -100, 100, 1],
       ['blacks', 'Đen', -100, 100, 1],
+      ['dr', 'Dải động (giữ vùng sáng)', 100, 400, 100],
     ],
   },
   color: {

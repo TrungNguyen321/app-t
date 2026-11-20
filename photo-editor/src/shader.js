@@ -65,6 +65,8 @@ uniform vec4 uBoxB[6];      // amount, angle, -, -
 uniform sampler2D uDisp;    // liquify displacement field (crop uv), RG
 uniform float uDispOn;
 uniform float uSkinSmooth, uSkinBright, uSkinRed;
+uniform vec2 uDRk;                 // (input white point, knee) for the DR shoulder; knee >= 1 = off
+uniform float uChrome, uChromeBlue; // colour chrome effect / blue (0..1)
 
 const float HUES[8] = float[8](0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 275.0, 315.0);
 
@@ -238,6 +240,18 @@ void main() {
   ev2 += uClarity * 0.55 * (ev - evb) * (1.0 - 0.4 * mh);
   float L2 = 0.18 * exp2(ev2);
   lin *= L2 / L;
+  // dynamic range (DR200/DR400): film-like shoulder that keeps highlight detail
+  if (uDRk.y < 0.99) {
+    float W = uDRk.x, kn = uDRk.y;
+    float pw = (W - kn) / (1.0 - kn);
+    float m = max(lin.r, max(lin.g, lin.b));
+    if (m > kn) {
+      float t = clamp((m - kn) / (W - kn), 0.0, 1.0);
+      float m2 = kn + (1.0 - kn) * (1.0 - pow(1.0 - t, pw));
+      lin *= m2 / m;
+      lin = mix(lin, vec3(m2), smoothstep(0.85, 1.0, t) * 0.6);
+    }
+  }
   // soft highlight clip: desaturate toward white instead of hue shifts
   float mx = max(lin.r, max(lin.g, lin.b));
   if (mx > 1.0) { float l = min(luma(lin), 1.0); lin = mix(lin / mx, vec3(1.0), clamp((mx - 1.0) / 1.5, 0.0, 1.0)); lin = mix(lin, lin * l / max(luma(lin), 1e-4), 0.0); }
@@ -311,6 +325,15 @@ void main() {
     c = nc;
   }
 
+  // colour chrome effect: deeper tones in highly saturated colours (Fuji-style)
+  if (uChrome > 0.0 || uChromeBlue > 0.0) {
+    vec3 h2 = rgb2hsv(clamp(c, 0.0, 1.0));
+    float sat2 = h2.y * h2.y;
+    float k2 = uChrome * 0.16 * sat2;
+    float hb = h2.x * 360.0;
+    k2 += uChromeBlue * 0.2 * h2.y * (bandWeight(hb, 5) + 0.6 * bandWeight(hb, 4));
+    c *= 1.0 - k2;
+  }
   // vibrance / saturation
   float l = luma(c);
   float sat = hsv.y;
