@@ -61,6 +61,7 @@ const state = {
   hslBand: 1, curveCh: 'rgb', selPoint: -1, original: false, lutCache: {}, customLut: null,
   thumbs: {}, userPresets: loadUserPresets(), activeLook: null, half: true,
   selFace: -1, selBox: -1, bodyMode: 'height', brush: 0.08,
+  view: { s: 1, tx: 0, ty: 0 }, compact: true, activeParam: {}, swipe: null, pinching: false, showHist: false,
 };
 let renderer;
 try { renderer = new Renderer($('#view')); } catch (e) { showStatus('Lỗi: ' + e.message); }
@@ -140,11 +141,46 @@ function layout() {
   const dpr = Math.min(window.devicePixelRatio || 1, 3);
   const cv = $('#view');
   cv.style.width = cssW + 'px'; cv.style.height = cssH + 'px';
-  const pw = Math.max(1, Math.min(Math.round(cssW * dpr), Math.round(cw))), ph = Math.max(1, Math.min(Math.round(cssH * dpr), Math.round(ch)));
+  // when zoomed, render more pixels (up to the crop size, max 4096 px) so the view stays sharp
+  const zs = Math.min(state.view.s, 4096 / Math.max(cssW * dpr, cssH * dpr));
+  const pw = Math.max(1, Math.min(Math.round(cssW * dpr * Math.max(1, zs)), Math.round(cw))), ph = Math.max(1, Math.min(Math.round(cssH * dpr * Math.max(1, zs)), Math.round(ch)));
   if (cv.width !== pw || cv.height !== ph) { cv.width = pw; cv.height = ph; }
   $('#viewWrap').style.width = cssW + 'px'; $('#viewWrap').style.height = cssH + 'px';
+  applyView();
   drawOverlay();
 }
+
+// ---- zoom / pan view ------------------------------------------------------------
+function applyView() {
+  const w = $('#viewWrap'), st = $('#stage');
+  const v = state.view;
+  const W = w.offsetWidth, H = w.offsetHeight, x0 = w.offsetLeft, y0 = w.offsetTop;
+  const SW = st.clientWidth, SH = st.clientHeight;
+  v.s = Math.min(8, Math.max(1, v.s));
+  if (v.s <= 1.001) { v.s = 1; v.tx = 0; v.ty = 0; }
+  const clampAx = (t, size, x, stage) => {
+    const big = size * v.s;
+    if (big <= stage) return (stage - big) / 2 - x;
+    return Math.min(-x, Math.max(stage - x - big, t));
+  };
+  if (v.s > 1) { v.tx = clampAx(v.tx, W, x0, SW); v.ty = clampAx(v.ty, H, y0, SH); }
+  w.style.transform = `translate(${v.tx}px, ${v.ty}px) scale(${v.s})`;
+  w.style.setProperty('--inv', String(1 / v.s));
+  const z = $('#zoomBadge');
+  if (z) { z.hidden = v.s <= 1; z.textContent = Math.round(v.s * 100) + '%'; }
+}
+function resetView() { state.view = { s: 1, tx: 0, ty: 0 }; applyView(); }
+/** zoom by factor k keeping client point (cx, cy) fixed */
+function zoomAt(k, cx, cy) {
+  const w = $('#viewWrap'), v = state.view;
+  const r = w.getBoundingClientRect();
+  const px = (cx - r.left) / v.s, py = (cy - r.top) / v.s;     // content coords
+  const ns = Math.min(8, Math.max(1, v.s * k));
+  v.tx += px * v.s - px * ns; v.ty += py * v.s - py * ns; v.s = ns;
+  applyView();
+}
+let relayoutT;
+function relayoutSoon() { clearTimeout(relayoutT); relayoutT = setTimeout(() => { layout(); render(); }, 180); }
 
 let raf = 0;
 function render() {
@@ -214,7 +250,7 @@ async function openFile(file) {
     state.history = []; state.future = []; state.thumbs = {}; state.activeLook = null; state.selPoint = -1;
     commit();
     ensureLut();
-    $('#empty').hidden = true; $('#viewWrap').hidden = false; $('#hist').hidden = false;
+    $('#empty').hidden = true; $('#viewWrap').hidden = false; $('#hist').hidden = !state.showHist; state.view = { s: 1, tx: 0, ty: 0 };
     for (const b of ['#btnExport', '#btnCompare']) $(b).disabled = false;
     layout(); render(); renderPanel();
     showStatus('');
@@ -258,6 +294,65 @@ function slider(label, min, max, step, get, set, { def = 0, hue = false } = {}) 
   upd();
   return el('div', { class: 'slider' + (hue ? ' hue' : '') }, lab, val, inp);
 }
+/**
+ * Snapseed-style compact control: a strip of parameter chips + one big slider.
+ * defs: [{label, min, max, step, get, set, def, hue}]
+ */
+function compactSliders(body, id, defs, extraTitle) {
+  if (!state.compact) {
+    body.append(el('div', { class: 'row', style: 'margin:0 0 4px;justify-content:flex-end' },
+      el('button', { class: 'btn small', onclick: () => { state.compact = true; renderPanel(); } }, '▭ Gọn')));
+    defs.forEach((d) => body.append(slider(d.label, d.min, d.max, d.step, d.get, d.set, { def: d.def || 0, hue: d.hue })));
+    return;
+  }
+  let i = Math.min(state.activeParam[id] || 0, defs.length - 1);
+  const chips = el('div', { class: 'chips params' });
+  const big = el('div', { class: 'bigval' });
+  const inp = el('input', { type: 'range' });
+  const chipEls = defs.map((d, k) => {
+    const c = el('button', { class: 'chip' + (k === i ? ' active' : ''), onclick: () => select(k) }, d.label, el('b', {}));
+    chips.append(c); return c;
+  });
+  const updChips = () => defs.forEach((d, k) => {
+    const v = d.get(), nz = Math.abs(v - (d.def || 0)) > 1e-9;
+    chipEls[k].lastChild.textContent = nz ? ' ' + fmt(v, d.step) : '';
+    chipEls[k].classList.toggle('nz', nz);
+  });
+  const upd = () => {
+    const d = defs[i];
+    big.innerHTML = '';
+    big.append(el('span', { class: 'bv-label' }, d.label), el('span', { class: 'bv-num' + (Math.abs(d.get() - (d.def || 0)) > 1e-9 ? ' nz' : '') }, fmt(d.get(), d.step)));
+    updChips();
+  };
+  const select = (k) => {
+    i = k; state.activeParam[id] = k;
+    chipEls.forEach((c, j) => c.classList.toggle('active', j === k));
+    const d = defs[k];
+    Object.assign(inp, { min: d.min, max: d.max, step: d.step });
+    inp.value = d.get();
+    inp.parentElement && inp.parentElement.classList.toggle('hue', !!d.hue);
+    chipEls[k].scrollIntoView({ block: 'nearest', inline: 'center' });
+    upd();
+  };
+  inp.addEventListener('input', () => { defs[i].set(parseFloat(inp.value)); upd(); render(); });
+  inp.addEventListener('change', commit);
+  big.addEventListener('dblclick', () => { const d = defs[i]; d.set(d.def || 0); inp.value = d.def || 0; upd(); render(); commit(); });
+  const head = el('div', { class: 'row', style: 'margin:0 0 2px;justify-content:space-between' }, big,
+    el('div', { class: 'row', style: 'margin:0' }, extraTitle || null,
+      el('button', { class: 'btn small', title: 'Hiện tất cả thanh', onclick: () => { state.compact = false; renderPanel(); } }, '≡')));
+  const sl = el('div', { class: 'slider compact' }, inp);
+  body.append(head, sl, chips);
+  select(i);
+  // expose to the on-image swipe gesture
+  state.swipe = {
+    get def() { return defs[i]; },
+    next(dir) { select((i + dir + defs.length) % defs.length); },
+    apply(v) { const d = defs[i]; d.set(v); inp.value = v; upd(); render(); },
+  };
+}
+const pDefs = (list) => list.map(([key, label, min, max, step]) => ({
+  label, min, max, step, get: () => state.params[key], set: (v) => { state.params[key] = v; }, def: defaultParams()[key], hue: /H$/.test(key) && max === 360,
+}));
 const pSlider = ([key, label, min, max, step]) =>
   slider(label, min, max, step, () => state.params[key], (v) => { state.params[key] = v; }, { def: defaultParams()[key], hue: /H$/.test(key) && max === 360 });
 
@@ -290,12 +385,12 @@ function renderPanel() {
 function renderPanelInner() {
   for (const b of tabs.children) b.classList.toggle('active', b.dataset.tab === state.tab);
   const body = $('#panelBody'); body.innerHTML = '';
+  state.swipe = null;
   if (!state.img && state.tab !== 'looks') { body.append(el('p', { class: 'hint' }, 'Mở một ảnh để bắt đầu.')); return; }
   const t = state.tab;
   if (PANELS[t]) {
     const P = PANELS[t];
-    body.append(title(P.title, resetKeys(P.sliders.map((s) => s[0]))));
-    P.sliders.forEach((s) => body.append(pSlider(s)));
+    compactSliders(body, t, pDefs(P.sliders), resetKeys(P.sliders.map((s) => s[0])));
     if (t === 'color') body.append(el('p', { class: 'hint' }, 'RAW: cân bằng trắng gốc lấy theo máy; Nhiệt độ/Sắc thái chỉnh thêm từ đó.'));
     return;
   }
@@ -523,9 +618,11 @@ function panelHsl(body) {
     el('span', { class: 'dot', style: `background:${b.color}` }), b.name)));
   body.append(chips);
   const i = state.hslBand, p = () => state.params;
-  body.append(slider('Sắc (Hue)', -100, 100, 1, () => p().hslH[i], (v) => { p().hslH[i] = v; }));
-  body.append(slider('Bão hoà', -100, 100, 1, () => p().hslS[i], (v) => { p().hslS[i] = v; }));
-  body.append(slider('Độ sáng', -100, 100, 1, () => p().hslL[i], (v) => { p().hslL[i] = v; }));
+  compactSliders(body, 'hsl', [
+    { label: 'Sắc (Hue)', min: -100, max: 100, step: 1, get: () => p().hslH[i], set: (v) => { p().hslH[i] = v; } },
+    { label: 'Bão hoà', min: -100, max: 100, step: 1, get: () => p().hslS[i], set: (v) => { p().hslS[i] = v; } },
+    { label: 'Độ sáng', min: -100, max: 100, step: 1, get: () => p().hslL[i], set: (v) => { p().hslL[i] = v; } },
+  ]);
   body.append(el('p', { class: 'hint' }, 'Da người nằm ở dải Cam: tăng Độ sáng, giảm nhẹ Bão hoà để da sáng và trong.'));
 }
 
@@ -658,8 +755,10 @@ function panelFace(body) {
   faces.forEach((f, i) => chips.append(el('button', { class: 'chip' + (i === state.selFace ? ' active' : ''), onclick: () => { state.selFace = i; renderPanel(); drawOverlay(); } }, `Mặt ${i + 1}`)));
   body.append(chips);
   const f = faces[state.selFace];
-  FACE_SLIDERS.forEach(([k, n]) => body.append(slider(n, -100, 100, 1, () => f[k], (v) => { f[k] = v; })));
-  body.append(slider('Nghiêng khung', -45, 45, 1, () => f.angle, (v) => { f.angle = v; drawOverlay(); }));
+  compactSliders(body, 'face', [
+    ...FACE_SLIDERS.map(([k, n]) => ({ label: n, min: -100, max: 100, step: 1, get: () => f[k], set: (v) => { f[k] = v; } })),
+    { label: 'Nghiêng khung', min: -45, max: 45, step: 1, get: () => f.angle, set: (v) => { f.angle = v; drawOverlay(); } },
+  ]);
   body.append(el('div', { class: 'row' },
     el('button', { class: 'btn small', onclick: () => { const c = clone(f); faces.forEach((o) => { for (const [k] of FACE_SLIDERS) o[k] = c[k]; }); render(); commit(); toast('Đã áp cho mọi khuôn mặt'); } }, 'Áp cho tất cả'),
     el('button', { class: 'btn small danger', onclick: () => { faces.splice(state.selFace, 1); state.selFace = faces.length - 1; render(); commit(); renderPanel(); drawOverlay(); } }, 'Xoá khung')));
@@ -710,10 +809,11 @@ function panelBody(body) {
 // ---- Portrait: skin ----------------------------------------------------------------
 function panelSkin(body) {
   const sk = state.params.skin;
-  body.append(title('Da'));
-  body.append(slider('Làm mịn da', 0, 100, 1, () => sk.smooth, (v) => { sk.smooth = v; }));
-  body.append(slider('Sáng da', -100, 100, 1, () => sk.bright, (v) => { sk.bright = v; }));
-  body.append(slider('Giảm đỏ da', 0, 100, 1, () => sk.red, (v) => { sk.red = v; }));
+  compactSliders(body, 'skin', [
+    { label: 'Làm mịn da', min: 0, max: 100, step: 1, get: () => sk.smooth, set: (v) => { sk.smooth = v; } },
+    { label: 'Sáng da', min: -100, max: 100, step: 1, get: () => sk.bright, set: (v) => { sk.bright = v; } },
+    { label: 'Giảm đỏ da', min: 0, max: 100, step: 1, get: () => sk.red, set: (v) => { sk.red = v; } },
+  ]);
   body.append(el('p', { class: 'hint' }, 'Tự nhận vùng da theo màu (không cần tô). Nếu tóc/nền màu gần da bị ảnh hưởng, hãy giảm mức hoặc dùng Chọn lọc.'));
 }
 
@@ -799,6 +899,7 @@ function drawOverlay() {
     } else mode = null;
   });
   ov.addEventListener('pointermove', (e) => {
+    if (state.pinching) { mode = null; return; }
     if (!mode) return;
     const [x, y, r] = rel(e);
     if (Math.hypot(e.clientX - start.cx, e.clientY - start.cy) > 4) moved = true;
@@ -817,6 +918,7 @@ function drawOverlay() {
     }
   });
   ov.addEventListener('pointerup', (e) => {
+    if (state.pinching) { mode = null; return; }
     if (!mode) return;
     const [x, y] = rel(e);
     if (mode.t === 'newpt' && !moved && state.params.points.length < 8) {
@@ -933,6 +1035,100 @@ function portraitMove(mode, x, y, r) {
   }
   drawOverlay(); render();
 }
+
+// ---- stage gestures: pinch-zoom, pan, double-tap, Snapseed swipe --------------------
+(() => {
+  const st = $('#stage');
+  const TOOL_TABS = ['selective', 'face', 'body', 'gradient', 'crop'];
+  const pts = new Map();
+  let pinch = null, one = null, lastTap = { t: 0, x: 0, y: 0 };
+  const hud = $('#hud');
+  const showHud = (txt) => { hud.textContent = txt; hud.hidden = false; };
+  const hideHud = () => { hud.hidden = true; };
+  st.addEventListener('pointerdown', (e) => {
+    if (!state.img || e.target.closest('#hist')) return;
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pts.size === 2) {
+      const [a, b] = [...pts.values()];
+      state.pinching = true; one = null; hideHud();
+      pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
+      return;
+    }
+    if (pts.size === 1) {
+      const tool = TOOL_TABS.includes(state.tab) && e.target.closest('#overlay');
+      one = { x: e.clientX, y: e.clientY, tx: state.view.tx, ty: state.view.ty, tool, mode: null, v0: 0, moved: false };
+    }
+  }, true);
+  st.addEventListener('pointermove', (e) => {
+    if (!pts.has(e.pointerId)) return;
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pinch && pts.size >= 2) {
+      const [a, b] = [...pts.values()];
+      const d = Math.hypot(a.x - b.x, a.y - b.y), mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      zoomAt(d / pinch.d, mx, my);
+      state.view.tx += mx - pinch.mx; state.view.ty += my - pinch.my; applyView();
+      pinch = { d, mx, my };
+      return;
+    }
+    if (!one || one.tool) return;
+    const dx = e.clientX - one.x, dy = e.clientY - one.y;
+    if (!one.mode && Math.hypot(dx, dy) > 8) {
+      one.moved = true;
+      if (state.view.s > 1) one.mode = 'pan';
+      else if (state.swipe) {
+        one.mode = Math.abs(dx) >= Math.abs(dy) ? 'adjust' : 'param';
+        one.v0 = state.swipe.def.get(); one.steps = 0;
+      }
+    }
+    if (one.mode === 'pan') { state.view.tx = one.tx + dx; state.view.ty = one.ty + dy; applyView(); }
+    else if (one.mode === 'adjust') {
+      const d = state.swipe.def, range = d.max - d.min;
+      let v = one.v0 + (dx / st.clientWidth) * range * 0.7;
+      v = Math.round(Math.min(d.max, Math.max(d.min, v)) / d.step) * d.step;
+      state.swipe.apply(+v.toFixed(4));
+      showHud(`${d.label}  ${fmt(v, d.step)}`);
+    } else if (one.mode === 'param') {
+      const steps = Math.trunc(dy / 36);
+      if (steps !== one.steps) { state.swipe.next(steps - one.steps); one.steps = steps; }
+      showHud(state.swipe.def.label);
+    }
+  }, true);
+  const end = (e) => {
+    if (!pts.has(e.pointerId)) return;
+    pts.delete(e.pointerId);
+    if (pinch) {
+      if (pts.size < 2) { pinch = null; relayoutSoon(); }
+      if (pts.size === 0) setTimeout(() => { state.pinching = false; }, 0);
+      return;
+    }
+    if (!one) return;
+    if (one.mode === 'adjust') commit();
+    if (one.mode) hideHud();
+    // double-tap to zoom (not on tool tabs, where taps place points)
+    if (!one.moved && !one.tool && e.type === 'pointerup') {
+      const now = Date.now();
+      if (now - lastTap.t < 320 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 30) {
+        if (state.view.s > 1) resetView(); else zoomAt(2.5, e.clientX, e.clientY);
+        relayoutSoon(); lastTap.t = 0;
+      } else lastTap = { t: now, x: e.clientX, y: e.clientY };
+    }
+    one = null;
+  };
+  st.addEventListener('pointerup', end, true);
+  st.addEventListener('pointercancel', end, true);
+  // desktop: wheel / trackpad pinch
+  st.addEventListener('wheel', (e) => {
+    if (!state.img) return;
+    e.preventDefault();
+    zoomAt(Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.002)), e.clientX, e.clientY);
+    relayoutSoon();
+  }, { passive: false });
+  // iOS Safari gesture events would zoom the whole page
+  for (const ev of ['gesturestart', 'gesturechange']) document.addEventListener(ev, (e) => e.preventDefault());
+})();
+
+$('#zoomBadge').addEventListener('click', () => { resetView(); relayoutSoon(); });
+$('#btnHist').addEventListener('click', () => { state.showHist = !state.showHist; $('#hist').hidden = !state.showHist || !state.img; $('#btnHist').classList.toggle('on', state.showHist); });
 
 // ---- export ----------------------------------------------------------------------------
 const dlg = $('#exportDlg');
