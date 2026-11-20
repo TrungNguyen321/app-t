@@ -25,6 +25,9 @@
     <button class="btn icon" id="btnRedo" title="Làm lại" disabled>
       <svg viewBox="0 0 24 24"><path d="m15 7 5 5-5 5M20 12H9a5 5 0 0 0 0 10h3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </button>
+    <button class="btn icon" id="btnHist" title="Biểu đồ màu">
+      <svg viewBox="0 0 24 24"><path d="M4 20V14M9 20V8M14 20v-9M19 20V5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+    </button>
     <button class="btn icon" id="btnCompare" title="Giữ để xem ảnh gốc" disabled>
       <svg viewBox="0 0 24 24"><path d="M12 3v18M5 5h14v14H5z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 5h7v14h-7z" fill="currentColor" opacity=".35"/></svg>
     </button>
@@ -45,6 +48,8 @@
     </div>
     <canvas id="hist" width="128" height="48" hidden></canvas>
     <div id="status" hidden></div>
+    <div id="hud" hidden></div>
+    <button id="zoomBadge" hidden title="Về khung vừa màn hình">100%</button>
   </main>
 
   <section id="panel"><div id="panelBody"></div></section>
