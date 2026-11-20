@@ -190,6 +190,7 @@ export class Renderer {
     f('uDetailScale', detailScale);
     f('uIsRaw', isRaw ? 1 : 0);
     f('uOriginal', original ? 1 : 0);
+    gl.uniform3fv(u.uClip, this.clip || [1, 1, 1]);
     f('uLutOn', this.lut && !original ? 1 : 0);
     f('uLutAmount', p.lutAmount / 100);
     f('uLutSize', this.lut ? this.lut.size : 1);
@@ -275,10 +276,20 @@ export class Renderer {
     {
       const dr = p.dr || 100;
       const wb = wbMultipliers(p.temp, p.tint);
-      const gain = Math.pow(2, p.exposure + (this._isRaw ? 0.35 : 0)) * Math.max(...wb) * (1 + Math.max(0, p.shadows) / 100 * 0.3);
-      const knee = off ? 1 : dr >= 400 ? 0.5 : dr >= 300 ? 0.6 : dr >= 200 ? 0.68 : 1;
+      const gain = Math.pow(2, p.exposure + (this._isRaw ? 1.35 : 0)) * Math.max(...wb) * (1 + Math.max(0, p.shadows) / 100 * 0.3);
+      let knee = off ? 1 : dr >= 400 ? 0.5 : dr >= 300 ? 0.6 : dr >= 200 ? 0.68 : 1;
+      if (!off && p.recover > 0) knee = Math.min(knee, 1 - (p.recover / 100) * 0.45);
+      f('uRecover', off ? 0 : (p.recover || 0) / 100);
       gl.uniform2f(u.uDRk, Math.max(1.05, gain), knee);
     }
+    const L = p.lens || {};
+    gl.uniform4f(u.uLensA, off ? 0 : (L.persV || 0) / 100, off ? 0 : (L.persH || 0) / 100, off ? 1 : (L.zoom || 1), off ? 0 : (L.distort || 0) / 100);
+    f('uCA', off ? 0 : (L.ca || 0) / 100);
+    gl.uniform1i(u.uFill, ['black', 'white', 'edge', 'mirror', 'mirror-blur'].indexOf(p.fill || 'mirror-blur'));
+    const B = p.lensBlur || {};
+    gl.uniform4f(u.uLB, !off && B.on ? 1 : 0, (B.amount || 0) / 100, B.r ?? 0.2, B.feather ?? 0.2);
+    gl.uniform4f(u.uLB2, B.x ?? 0.5, B.y ?? 0.5, (B.bokeh || 0) / 100, B.shape === 'linear' ? 1 : 0);
+    f('uLBAngle', ((B.angle || 0) * Math.PI) / 180);
     f('uChrome', off ? 0 : p.chrome || 0);
     f('uChromeBlue', off ? 0 : p.chromeBlue || 0);
   }

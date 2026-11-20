@@ -16,7 +16,7 @@ export const IDENTITY_CURVE = () => [[0, 0], [255, 255]];
 export function defaultParams() {
   return {
     // Ánh sáng
-    exposure: 0, contrast: 0, highlights: 0, shadows: 0, whites: 0, blacks: 0,
+    exposure: 0, contrast: 0, highlights: 0, shadows: 0, whites: 0, blacks: 0, recover: 0,
     // Cân bằng trắng
     temp: 0, tint: 0,
     // Hiện diện
@@ -59,6 +59,11 @@ export function defaultParams() {
     dr: 100, chrome: 0, chromeBlue: 0,
     // Công thức Fuji đang dùng (lớp riêng, cộng thêm vào các thanh chỉnh)
     recipe: null,
+    // Ống kính: phối cảnh, méo, viền màu, làm mờ ống kính; lấp rìa thiếu; mở rộng khung
+    lens: { persV: 0, persH: 0, zoom: 1, distort: 0, ca: 0 },
+    lensBlur: { on: false, amount: 50, x: 0.5, y: 0.45, r: 0.18, feather: 0.22, bokeh: 30, shape: 'radial', angle: 0 },
+    fill: 'mirror-blur',
+    expand: 0,
   };
 }
 
@@ -72,6 +77,7 @@ export const PANELS = {
       ['exposure', 'Phơi sáng', -5, 5, 0.05],
       ['contrast', 'Tương phản', -100, 100, 1],
       ['highlights', 'Vùng sáng', -100, 100, 1],
+      ['recover', 'Cứu vùng cháy', 0, 100, 1],
       ['shadows', 'Vùng tối', -100, 100, 1],
       ['whites', 'Trắng', -100, 100, 1],
       ['blacks', 'Đen', -100, 100, 1],

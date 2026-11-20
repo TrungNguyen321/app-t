@@ -65,8 +65,17 @@ uniform vec4 uBoxB[6];      // amount, angle, -, -
 uniform sampler2D uDisp;    // liquify displacement field (crop uv), RG
 uniform float uDispOn;
 uniform float uSkinSmooth, uSkinBright, uSkinRed;
+uniform float uRecover;           // highlight recovery 0..1
+uniform vec3 uClip;               // per-channel clip level of the source
 uniform vec2 uDRk;                 // (input white point, knee) for the DR shoulder; knee >= 1 = off
 uniform float uChrome, uChromeBlue; // colour chrome effect / blue (0..1)
+// ---- lens ----
+uniform vec4 uLensA;      // persV, persH, persZoom, distort
+uniform float uCA;        // chromatic aberration (-1..1)
+uniform int uFill;        // 0 black, 1 white, 2 edge, 3 mirror, 4 mirror+blur
+uniform vec4 uLB;         // on, amount, radius, feather
+uniform vec4 uLB2;        // x, y, bokeh, shape (0 radial, 1 linear)
+uniform float uLBAngle;
 
 const float HUES[8] = float[8](0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 275.0, 315.0);
 
@@ -192,12 +201,64 @@ vec2 warp(vec2 uv) {
   return vec2(q.x / uAspectC, q.y);
 }
 
+// perspective (keystone) + barrel/pincushion distortion, in crop uv
+vec2 lensGeom(vec2 uv) {
+  vec2 p = uv - 0.5; p.x *= uAspectC;
+  p /= uLensA.z;
+  float w = 1.0 + uLensA.y * p.x * 0.9 + uLensA.x * p.y * 0.9;
+  p /= max(w, 0.2);
+  p *= 1.0 + uLensA.w * dot(p, p) * 0.6;
+  p.x /= uAspectC;
+  return p + 0.5;
+}
+vec2 toSrc(vec2 cuv) { return (uGeo * vec3(cuv, 1.0)).xy; }
+vec2 mirrorUv(vec2 s) { return 1.0 - abs(1.0 - abs(s)); }
+// golden-angle disk blur around crop-uv point; R in crop-height units
+vec3 diskBlur(vec2 cuv, float R, float bokeh) {
+  vec3 acc = vec3(0.0); float ws = 0.0;
+  for (int i = 0; i < 28; i++) {
+    float r = sqrt((float(i) + 0.5) / 28.0) * R, a = float(i) * 2.39996;
+    vec2 o = vec2(cos(a) * r / uAspectC, sin(a) * r);
+    vec3 s = src(mirrorUv(toSrc(cuv + o)));
+    float l = luma(s);
+    float w = 1.0 + bokeh * l * l * 10.0;
+    acc += s * w; ws += w;
+  }
+  return acc / ws;
+}
+
 void main() {
-  vec2 suv = (uGeo * vec3(warp(vUv), 1.0)).xy;
-  if (suv.x < -0.001 || suv.y < -0.001 || suv.x > 1.001 || suv.y > 1.001) { outColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
-  vec3 lin = src(suv);
+  vec2 cuv = lensGeom(warp(vUv));
+  vec2 suv = toSrc(cuv);
+  vec2 od2 = max(-suv, suv - 1.0);
+  float od = max(max(od2.x, od2.y), 0.0);
+  float fillBlur = 0.0;
+  if (od > 0.0005) {
+    if (uFill == 0) { outColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
+    if (uFill == 1) { outColor = vec4(1.0); return; }
+    if (uFill == 2) suv = clamp(suv, 0.0, 1.0);
+    else { suv = mirrorUv(suv); if (uFill == 4) fillBlur = 0.012 + od * 0.25; }
+  }
+  vec3 lin;
+  // lens blur mask (display space)
+  float lbM = 0.0;
+  if (uLB.x > 0.5 && uOriginal < 0.5) {
+    vec2 d = (vUv - uLB2.xy) * vec2(uOutSize.x / uOutSize.y, 1.0);
+    float dist;
+    if (uLB2.w > 0.5) { vec2 n = vec2(-sin(uLBAngle), cos(uLBAngle)); dist = abs(dot(d, n)); }
+    else dist = length(d);
+    lbM = smoothstep(uLB.z, uLB.z + max(uLB.w, 0.001), dist);
+  }
+  float R = max(fillBlur, lbM * uLB.y * 0.035);
+  if (R > 0.0008) lin = diskBlur(cuv, R, uLB2.z * (fillBlur > 0.0 ? 0.0 : 1.0));
+  else lin = src(suv);
+  if (uCA != 0.0 && R <= 0.0008) {
+    vec2 c0 = cuv - 0.5;
+    lin.r = src(mirrorUv(toSrc(0.5 + c0 * (1.0 + uCA * 0.006)))).r;
+    lin.b = src(mirrorUv(toSrc(0.5 + c0 * (1.0 - uCA * 0.006)))).b;
+  }
   if (uOriginal > 0.5) {
-    vec3 o = uIsRaw > 0.5 ? toSrgb(lin * exp2(0.35)) : toSrgb(lin);
+    vec3 o = uIsRaw > 0.5 ? toSrgb(lin * exp2(1.35)) : toSrgb(lin);
     outColor = vec4(o, 1.0); return;
   }
 
@@ -222,8 +283,17 @@ void main() {
     }
   }
 
+  // ---- clipped highlights: where any channel hit its clip level, blend to neutral
+  //      so pulling highlights down gives grey/white detail instead of magenta/cyan casts
+  {
+    vec3 cr = lin / max(uClip, vec3(1e-3));
+    float cm = max(cr.r, max(cr.g, cr.b));
+    float wc = smoothstep(0.8, 0.97, cm);
+    if (wc > 0.0) lin = mix(lin, vec3(max(lin.r, max(lin.g, lin.b))), wc);
+  }
+
   // ---- linear stage -------------------------------------------------------
-  float baseExp = uIsRaw > 0.5 ? 0.35 : 0.0;
+  float baseExp = uIsRaw > 0.5 ? 1.35 : 0.0;
   float k = exp2(uExposure + baseExp);
   lin = max(uCal * (lin * uWB), 0.0) * k;
   float wbL = luma(uWB);
@@ -231,13 +301,21 @@ void main() {
   float L = max(luma(lin), 1e-5);
 
   float ev = log2(L / 0.18), evb = log2(Lb / 0.18);
-  float reg = mix(ev, evb, 0.65);
-  float mh = smoothstep(-0.2, 2.6, reg);
-  float ms = 1.0 - smoothstep(-4.5, -0.6, reg);
+  float reg = mix(ev, evb, 0.4);
+  // tone regions measured in perceived (display) brightness, like Lightroom
+  float pr = toSrgb1(min(0.18 * exp2(reg), 1.0));
+  float mh = smoothstep(0.38, 1.0, pr);
+  float ms = 1.0 - smoothstep(0.04, 0.72, pr);
   float ev2 = ev;
-  ev2 += uHighlights * 1.7 * mh;
-  ev2 += uShadows * 1.7 * ms;
+  ev2 += uHighlights * 1.9 * mh;
+  ev2 += uShadows * 2.2 * ms;
   ev2 += uClarity * 0.55 * (ev - evb) * (1.0 - 0.4 * mh);
+  // highlight recovery: pull bright regions down and bring back their local detail
+  if (uRecover > 0.0) {
+    float mr = smoothstep(0.5, 1.0, pr);
+    ev2 -= uRecover * 1.5 * mr;
+    ev2 += uRecover * 0.9 * (ev - evb) * mr;
+  }
   float L2 = 0.18 * exp2(ev2);
   lin *= L2 / L;
   // dynamic range (DR200/DR400): film-like shoulder that keeps highlight detail
@@ -316,12 +394,12 @@ void main() {
     float w = bandWeight(hue, i);
     dH += w * uHslH[i / 4][i % 4]; dS += w * uHslS[i / 4][i % 4]; dL += w * uHslL[i / 4][i % 4];
   }
-  float satW = smoothstep(0.02, 0.25, hsv.y);
+  float satW = smoothstep(0.0, 0.18, hsv.y);
   if (dH != 0.0 || dS != 0.0 || dL != 0.0) {
-    hsv.x = fract(hsv.x + dH * satW * 30.0 / 360.0 + 1.0);
-    hsv.y = clamp(hsv.y * (1.0 + dS), 0.0, 1.0);
+    hsv.x = fract(hsv.x + dH * satW * 45.0 / 360.0 + 1.0);
+    hsv.y = clamp(dS > 0.0 ? hsv.y + (1.0 - hsv.y) * dS * 0.5 * satW + hsv.y * dS * 0.3 : hsv.y * (1.0 + dS), 0.0, 1.0);
     vec3 nc = hsv2rgb(hsv);
-    nc *= 1.0 + dL * 0.45 * satW;
+    nc *= 1.0 + dL * (dL > 0.0 ? 0.7 : 0.6) * satW;
     c = nc;
   }
 
