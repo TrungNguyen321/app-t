@@ -155,8 +155,10 @@ function ensureLut() {
 }
 
 // ---- view layout & render ---------------------------------------------------------
-function geomFor(p, w, h) {
-  const g = computeGeometry(p, w, h);
+function geomFor(p, w, h, forOutput = false) {
+  // while the free crop is being edited, show the whole frame with the crop box on top
+  const editingFree = !forOutput && state.tab === 'crop' && p.aspect === -1;
+  const g = computeGeometry(p, w, h, { ignoreRect: editingFree });
   return { geo: g.geo, cw: g.cw, ch: g.ch * outHeightScale(p), aspectC: g.cw / g.ch };
 }
 
@@ -338,7 +340,7 @@ for (const ev of ['pointerup', 'pointerleave', 'pointercancel']) cmp.addEventLis
 // ---- tabs & panels ---------------------------------------------------------------
 const tabs = $('#tabs');
 for (const [id, name] of TABS) {
-  tabs.append(el('button', { 'data-tab': id, onclick: () => { state.tab = id; renderPanel(); drawOverlay(); } },
+  tabs.append(el('button', { 'data-tab': id, onclick: () => { const was = state.tab; state.tab = id; renderPanel(); if (was === 'crop' || id === 'crop') { layout(); render(); } drawOverlay(); } },
     (() => { const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); s.setAttribute('viewBox', '0 0 24 24'); s.innerHTML = ICONS[id]; return s; })(),
     el('span', {}, name)));
 }
@@ -887,9 +889,9 @@ function panelGradient(body) {
 // ---- Crop ---------------------------------------------------------------------------
 function panelCrop(body) {
   const p = state.params;
-  body.append(title('Cắt & xoay', resetKeys(['rotate90', 'flipH', 'straighten', 'aspect', 'zoom', 'panX', 'panY'])));
+  body.append(title('Cắt & xoay', resetKeys(['rotate90', 'flipH', 'straighten', 'aspect', 'zoom', 'panX', 'panY', 'cropRect'])));
   const chips = el('div', { class: 'chips' });
-  ASPECTS.forEach((a) => chips.append(el('button', { class: 'chip' + (Math.abs(p.aspect - a.v) < 1e-6 ? ' active' : ''), onclick: () => { p.aspect = a.v; p.panX = p.panY = 0; layout(); render(); commit(); renderPanel(); } }, a.label)));
+  ASPECTS.forEach((a) => chips.append(el('button', { class: 'chip' + (Math.abs(p.aspect - a.v) < 1e-6 ? ' active' : ''), onclick: () => { p.aspect = a.v; p.panX = p.panY = 0; if (a.v === -1) p.zoom = 1; layout(); render(); commit(); renderPanel(); drawOverlay(); } }, a.label)));
   body.append(chips);
   const relayout = () => { layout(); };
   body.append(slider('Làm thẳng', -45, 45, 0.1, () => p.straighten, (v) => { p.straighten = v; relayout(); }));
@@ -898,7 +900,7 @@ function panelCrop(body) {
     el('button', { class: 'btn small', onclick: () => { p.rotate90 = (p.rotate90 + 3) % 4; layout(); render(); commit(); } }, '⟲ Xoay trái'),
     el('button', { class: 'btn small', onclick: () => { p.rotate90 = (p.rotate90 + 1) % 4; layout(); render(); commit(); } }, '⟳ Xoay phải'),
     el('button', { class: 'btn small', onclick: () => { p.flipH = !p.flipH; render(); commit(); } }, '⇋ Lật')));
-  body.append(el('p', { class: 'hint' }, 'Kéo ảnh để chọn vùng cắt khi đã thu phóng hoặc đổi tỉ lệ.'));
+  body.append(el('p', { class: 'hint' }, p.aspect === -1 ? 'Tự do: kéo 4 góc / 4 cạnh của khung để cắt, kéo bên trong khung để dời. Rời tab Cắt xoay để xem ảnh đã cắt.' : 'Kéo ảnh để chọn vùng cắt khi đã thu phóng hoặc đổi tỉ lệ.'));
 }
 
 // ---- Portrait: face ----------------------------------------------------------------
@@ -1051,6 +1053,15 @@ function drawOverlay() {
     const g = state.params.grad;
     ov.append(el('div', { class: 'gline', style: `top:${g.y0 * H}px` }, el('span', {}, '1')));
     ov.append(el('div', { class: 'gline end', style: `top:${g.y1 * H}px` }, el('span', {}, '0')));
+  } else if (state.tab === 'crop' && state.params.aspect === -1) {
+    const r = state.params.cropRect, L = r.x0 * W, T = r.y0 * H, R = r.x1 * W, B = r.y1 * H;
+    ov.append(el('div', { class: 'cshade', style: `left:0;top:0;width:${W}px;height:${T}px` }),
+      el('div', { class: 'cshade', style: `left:0;top:${B}px;width:${W}px;height:${H - B}px` }),
+      el('div', { class: 'cshade', style: `left:0;top:${T}px;width:${L}px;height:${B - T}px` }),
+      el('div', { class: 'cshade', style: `left:${R}px;top:${T}px;width:${W - R}px;height:${B - T}px` }),
+      el('div', { class: 'cropgrid', style: `inset:auto;left:${L}px;top:${T}px;width:${R - L}px;height:${B - T}px` }));
+    for (const [x, y, cls] of [[L, T, 'tl'], [R, T, 'tr'], [L, B, 'bl'], [R, B, 'br']]) ov.append(el('div', { class: 'chdl c-' + cls, style: `left:${x}px;top:${y}px` }));
+    for (const [x, y, cls] of [[(L + R) / 2, T, 'h'], [(L + R) / 2, B, 'h'], [L, (T + B) / 2, 'v'], [R, (T + B) / 2, 'v']]) ov.append(el('div', { class: 'ehdl e-' + cls, style: `left:${x}px;top:${y}px` }));
   } else if (state.tab === 'crop') {
     ov.append(el('div', { class: 'cropgrid' }));
   } else if (state.tab === 'lens' && state.lensTab === 'blur' && state.params.lensBlur.on) {
@@ -1120,6 +1131,14 @@ function drawOverlay() {
       const g = state.params.grad;
       const d0 = Math.abs(g.y0 - y) * r.height, d1 = Math.abs(g.y1 - y) * r.height;
       mode = { t: 'grad', k: d0 <= d1 ? 'y0' : 'y1' };
+    } else if (state.tab === 'crop' && state.params.aspect === -1) {
+      const cr = state.params.cropRect, W = r.width, H = r.height;
+      const nx = (v) => Math.abs(v - x) * W < 26, ny = (v) => Math.abs(v - y) * H < 26;
+      const inY = y > cr.y0 - 0.03 && y < cr.y1 + 0.03, inX = x > cr.x0 - 0.03 && x < cr.x1 + 0.03;
+      const ed = { l: nx(cr.x0) && inY, r: nx(cr.x1) && inY, t: ny(cr.y0) && inX, b: ny(cr.y1) && inX };
+      if (ed.l || ed.r || ed.t || ed.b) mode = { t: 'crop', ed, r0: { ...cr }, x0: x, y0: y };
+      else if (x > cr.x0 && x < cr.x1 && y > cr.y0 && y < cr.y1) mode = { t: 'crop', move: true, r0: { ...cr }, x0: x, y0: y };
+      else mode = null;
     } else if (state.tab === 'crop') {
       mode = { t: 'pan', px: state.params.panX, py: state.params.panY };
     } else if (state.tab === 'lens' && state.lensTab === 'blur' && state.params.lensBlur.on) {
@@ -1140,6 +1159,20 @@ function drawOverlay() {
       p.col = null; drawOverlay(); render();
     } else if (mode.t === 'grad') {
       state.params.grad[mode.k] = Math.min(1, Math.max(0, y)); drawOverlay(); render();
+    } else if (mode.t === 'crop') {
+      const cr = state.params.cropRect, o = mode.r0, dx = x - mode.x0, dy = y - mode.y0, MIN = 0.06;
+      const cl = (v) => Math.min(1, Math.max(0, v));
+      if (mode.move) {
+        const w = o.x1 - o.x0, h = o.y1 - o.y0;
+        cr.x0 = Math.min(1 - w, Math.max(0, o.x0 + dx)); cr.x1 = cr.x0 + w;
+        cr.y0 = Math.min(1 - h, Math.max(0, o.y0 + dy)); cr.y1 = cr.y0 + h;
+      } else {
+        if (mode.ed.l) cr.x0 = Math.min(cl(o.x0 + dx), cr.x1 - MIN);
+        if (mode.ed.r) cr.x1 = Math.max(cl(o.x1 + dx), cr.x0 + MIN);
+        if (mode.ed.t) cr.y0 = Math.min(cl(o.y0 + dy), cr.y1 - MIN);
+        if (mode.ed.b) cr.y1 = Math.max(cl(o.y1 + dy), cr.y0 + MIN);
+      }
+      drawOverlay();
     } else if (mode.t === 'lb') {
       state.params.lensBlur.x = Math.min(1, Math.max(0, x)); state.params.lensBlur.y = Math.min(1, Math.max(0, y)); drawOverlay(); render();
     } else if (mode.t && mode.t.startsWith('f-') || mode.t && mode.t.startsWith('b-')) {
@@ -1184,7 +1217,7 @@ function drawOverlay() {
       state.selBox = p.boxes.length - 1; render(); commit(); renderPanel(); drawOverlay();
     } else if (mode.t === 'b-push') {
       state.brushPos = null; drawOverlay(); commit(); renderPanel();
-    } else if (mode.t === 'grad' || mode.t === 'pan' || mode.t === 'lb' || (mode.t.startsWith('f-') || mode.t.startsWith('b-')) && moved) commit();
+    } else if (mode.t === 'grad' || mode.t === 'pan' || mode.t === 'lb' || mode.t === 'crop' || (mode.t.startsWith('f-') || mode.t.startsWith('b-')) && moved) commit();
     mode = null;
   });
 })();
@@ -1471,7 +1504,7 @@ $('#expSize').addEventListener('change', () => { $('#expSize').dataset.touched =
 $('#btnExport').onclick = () => {
   if (!state.img) return;
   const [fw, fh] = fullSize(state.img);
-  const { cw, ch } = geomFor(state.params, fw, fh);
+  const { cw, ch } = geomFor(state.params, fw, fh, true);
   // phones: default to 4096 px for big images (full 30+ MP exports can exhaust Safari's GPU memory)
   if (matchMedia('(pointer: coarse)').matches && Math.max(cw, ch) > 4096 && !$('#expSize').dataset.touched) $('#expSize').value = '4096';
   $('#expInfo').textContent = `Kích thước đầy đủ: ${Math.round(cw)}×${Math.round(ch)} px` + (state.img.isRaw && state.half ? ' (RAW giải mã ½ để chạy nhẹ trên điện thoại)' : '');
@@ -1518,7 +1551,7 @@ async function doExport(maxSide, quality) {
     const [fw, fh] = fullSize(img);
     if (Math.max(fw, fh) > renderer.maxTex) throw new Error(`Ảnh quá lớn cho GPU (${fw}×${fh}, tối đa ${renderer.maxTex})`);
     fullSrc = renderer.makeSource(full);
-    const { geo, cw, ch, aspectC } = geomFor(state.params, fw, fh);
+    const { geo, cw, ch, aspectC } = geomFor(state.params, fw, fh, true);
     ensureDisp(state.params, aspectC);
     let ow = Math.round(cw), oh = Math.round(ch);
     const lim = Math.min(maxSide || Infinity, renderer.maxTex);

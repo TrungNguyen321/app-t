@@ -45,6 +45,7 @@ export function defaultParams() {
     lutAmount: 100,
     // Hình học
     rotate90: 0, flipH: false, straighten: 0, aspect: 0, zoom: 1, panX: 0, panY: 0,
+    cropRect: { x0: 0, y0: 0, x1: 1, y1: 1 },   // free crop (aspect -1)
     // Gradient (trời)
     grad: { on: false, y0: 0.0, y1: 0.5, exposure: 0, highlights: 0, temp: 0, saturation: 0 },
     // Chọn lọc (điểm như Snapseed)
