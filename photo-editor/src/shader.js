@@ -5,8 +5,9 @@
 export const VERT = `#version 300 es
 in vec2 aPos;
 out vec2 vUv;
+uniform vec4 uTile;   // tile origin (xy) and size (zw) in full-output uv, for tiled export
 void main() {
-  vUv = vec2(aPos.x * 0.5 + 0.5, 0.5 - aPos.y * 0.5); // y = 0 at top
+  vUv = uTile.xy + vec2(aPos.x * 0.5 + 0.5, 0.5 - aPos.y * 0.5) * uTile.zw; // y = 0 at top
   gl_Position = vec4(aPos, 0.0, 1.0);
 }`;
 

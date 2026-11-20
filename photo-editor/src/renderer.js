@@ -60,7 +60,13 @@ export class Renderer {
     const gl = canvas.getContext('webgl2', { preserveDrawingBuffer: true, antialias: false, premultipliedAlpha: false });
     if (!gl) throw new Error('Trình duyệt không hỗ trợ WebGL2');
     this.gl = gl;
-    this.maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+    this.init();
+  }
+
+  /** (re)create every GPU resource; also used after Safari restores a lost context */
+  init() {
+    const gl = this.gl;
+    this.maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE) || 4096;
     this.progs = {};
     const vbo = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
@@ -169,13 +175,14 @@ export class Renderer {
   /**
    * Draw. target: null = canvas, or {fbo, w, h}. geo: Float32Array(9) mapping output uv -> source uv.
    */
-  draw(source, p, { geo, outW, outH, detailScale = 1, isRaw = false, original = false, fbo = null, aspectC = 1 }) {
+  draw(source, p, { geo, outW, outH, detailScale = 1, isRaw = false, original = false, fbo = null, aspectC = 1, vpW = 0, vpH = 0, tile = null }) {
     this._isRaw = isRaw;
     const gl = this.gl;
     const { p: prog, u } = this.prog(source.u16);
     gl.useProgram(prog);
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-    gl.viewport(0, 0, outW, outH);
+    gl.viewport(0, 0, vpW || outW, vpH || outH);
+    if (u.uTile) gl.uniform4fv(u.uTile, tile || [0, 0, 1, 1]);
     this._updateCurve(p);
 
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, source.tex); gl.uniform1i(u.uSrc, 0);
@@ -295,6 +302,43 @@ export class Renderer {
     f('uChromeBlue', off ? 0 : p.chromeBlue || 0);
   }
 
+  /**
+   * Export in tiles (default 1024 px) straight into a 2D canvas, so the GPU never needs one
+   * huge framebuffer. Throws if the GPU context is lost or the result is completely black.
+   */
+  renderTiledToCanvas(source, p, opts, tile = 1024) {
+    const gl = this.gl, { outW, outH } = opts;
+    const cv = document.createElement('canvas'); cv.width = outW; cv.height = outH;
+    const ctx = cv.getContext('2d');
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, tile, tile, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    const fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    const px = new Uint8ClampedArray(tile * tile * 4);
+    let nonBlack = false;
+    try {
+      for (let ty = 0; ty < outH; ty += tile) {
+        for (let tx = 0; tx < outW; tx += tile) {
+          const w = Math.min(tile, outW - tx), h = Math.min(tile, outH - ty);
+          this.draw(source, p, { ...opts, fbo, vpW: w, vpH: h, tile: [tx / outW, ty / outH, w / outW, h / outH] });
+          gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+          if (gl.isContextLost()) throw new Error('GPU bị Safari thu hồi (thiếu bộ nhớ)');
+          const img = new ImageData(w, h), d = img.data, rb = w * 4;
+          for (let y = 0; y < h; y++) d.set(px.subarray((h - 1 - y) * rb, (h - y) * rb), y * rb);
+          if (!nonBlack) for (let i = 0; i < d.length; i += 4 * 97) if (d[i] | d[i + 1] | d[i + 2]) { nonBlack = true; break; }
+          ctx.putImageData(img, tx, ty);
+        }
+      }
+    } finally {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.deleteFramebuffer(fbo); gl.deleteTexture(tex);
+    }
+    if (!nonBlack) throw new Error('Ảnh xuất ra toàn màu đen — GPU không vẽ được (có thể Safari thiếu bộ nhớ). Hãy tải lại trang và thử xuất cỡ nhỏ hơn.');
+    return cv;
+  }
+
   /** Render offscreen and read RGBA8 pixels (top row first). */
   renderToPixels(source, p, opts) {
     const gl = this.gl, { outW, outH } = opts;
@@ -306,6 +350,7 @@ export class Renderer {
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
     this.draw(source, p, { ...opts, fbo });
     const px = new Uint8ClampedArray(outW * outH * 4);
+    if (gl.isContextLost()) throw new Error('GPU bị Safari thu hồi (thiếu bộ nhớ)');
     gl.readPixels(0, 0, outW, outH, gl.RGBA, gl.UNSIGNED_BYTE, px);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.deleteFramebuffer(fbo); gl.deleteTexture(tex);

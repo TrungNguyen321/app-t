@@ -69,6 +69,28 @@ export function defaultParams() {
 
 export const clone = (p) => JSON.parse(JSON.stringify(p));
 
+/** merge saved/imported params onto defaults, replacing any NaN/Infinity/wrong-typed value */
+export function sanitizeParams(src) {
+  const def = defaultParams();
+  const fix = (d, v) => {
+    if (typeof d === 'number') return typeof v === 'number' && Number.isFinite(v) ? v : d;
+    if (typeof d === 'boolean') return typeof v === 'boolean' ? v : d;
+    if (typeof d === 'string') return typeof v === 'string' ? v : d;
+    if (Array.isArray(d)) {
+      if (!Array.isArray(v)) return d;
+      if (d.length && typeof d[0] === 'number') return d.map((x, i) => fix(x, v[i]));
+      return v;                       // lists of points/faces/etc. are taken as they are
+    }
+    if (d && typeof d === 'object') {
+      const o = { ...d };
+      if (v && typeof v === 'object') for (const k of Object.keys(v)) o[k] = k in d ? fix(d[k], v[k]) : v[k];
+      return o;
+    }
+    return v === undefined ? d : v;
+  };
+  return fix(def, src || {});
+}
+
 // Slider definitions for each tool panel.
 export const PANELS = {
   light: {
