@@ -1,4 +1,4 @@
-import { defaultParams, clone, PANELS, HSL_BANDS, FACE_SLIDERS, newFace } from './params.js';
+import { defaultParams, clone, PANELS, HSL_BANDS, FACE_SLIDERS, newFace, sanitizeParams } from './params.js';
 import { Renderer } from './renderer.js';
 import { loadRaw, loadImage, isRawName, fullSize } from './loader.js';
 import { computeGeometry, ASPECTS, outHeightScale, cropToDisplayV, displayToCropV } from './geometry.js';
@@ -171,7 +171,8 @@ function layout() {
   const cv = $('#view');
   cv.style.width = cssW + 'px'; cv.style.height = cssH + 'px';
   // when zoomed, render more pixels (up to the crop size, max 4096 px) so the view stays sharp
-  const zs = Math.min(state.view.s, 4096 / Math.max(cssW * dpr, cssH * dpr));
+  // keep the view canvas within ~4 MP: iPhone Safari drops the GPU context when memory runs out
+  const zs = Math.min(state.view.s, Math.sqrt(4.0e6 / (cssW * dpr * cssH * dpr)), 2600 / Math.max(cssW * dpr, cssH * dpr));
   const pw = Math.max(1, Math.min(Math.round(cssW * dpr * Math.max(1, zs)), Math.round(cw))), ph = Math.max(1, Math.min(Math.round(cssH * dpr * Math.max(1, zs)), Math.round(ch)));
   if (cv.width !== pw || cv.height !== ph) { cv.width = pw; cv.height = ph; }
   $('#viewWrap').style.width = cssW + 'px'; $('#viewWrap').style.height = cssH + 'px';
@@ -253,6 +254,33 @@ function scheduleHist() {
 }
 
 window.addEventListener('resize', () => { layout(); render(); });
+
+// ---- GPU context loss (iPhone Safari frees the GPU under memory pressure) --------------
+let lostT;
+function restoreGpu() {
+  renderer.init();
+  dispKey = '';
+  if (state.img) {
+    state.src = renderer.makeSource(state.img.preview);
+    renderer.setBlur(state.img.blur.data, state.img.blur.w, state.img.blur.h);
+    renderer.clip = state.img.clip;
+  }
+  ensureLut(); layout(); render();
+}
+$('#view').addEventListener('webglcontextlost', (e) => {
+  e.preventDefault();                        // allow the browser to restore it
+  showStatus('Safari tạm thu hồi GPU (thiếu bộ nhớ) — đang khôi phục…');
+  clearTimeout(lostT);
+  lostT = setTimeout(() => {
+    const s = $('#status'); s.hidden = false; s.innerHTML = '';
+    s.append(el('div', {}, 'Không khôi phục được GPU. Bản chỉnh đã được tự lưu — tải lại trang rồi mở lại ảnh là tiếp tục được.'),
+      el('div', { class: 'row', style: 'justify-content:center' }, el('button', { class: 'btn primary small', onclick: () => location.reload() }, 'Tải lại trang')));
+  }, 4000);
+});
+$('#view').addEventListener('webglcontextrestored', () => {
+  clearTimeout(lostT);
+  try { restoreGpu(); showStatus(''); toast('Đã khôi phục GPU'); } catch (err) { console.error(err); }
+});
 // the panel height changes with each tool -> the stage resizes; keep the canvas fitted
 new ResizeObserver(() => { layout(); render(); }).observe($('#stage'));
 
@@ -289,7 +317,7 @@ async function openFile(file) {
     const info = `${img.isRaw ? 'RAW' : 'Ảnh'} ${fw}×${fh}${img.meta && img.meta.model ? ' · ' + (img.meta.make || '') + ' ' + img.meta.model : ''}`;
     const saved = await store.getEdit(state.fileKey);
     if (saved && saved.params) {
-      state.params = Object.assign(defaultParams(), saved.params);
+      state.params = sanitizeParams(saved.params);
       commit(); ensureLut(); layout(); render(); renderPanel();
       toast(`${info} · Đã mở lại bản chỉnh trước`, 6000, { label: 'Chỉnh lại từ đầu', fn: () => { state.params = defaultParams(); commit(); ensureLut(); layout(); render(); renderPanel(); } });
     } else toast(info);
@@ -376,11 +404,13 @@ class Ruler {
     this.d = d;
     const n = (d.max - d.min) / d.step;
     this.u = d.step * Math.max(1, Math.ceil(n / 100));
-    this.v = d.get(); this.draw();
+    const g = d.get();
+    this.v = Number.isFinite(g) ? g : (d.def || 0); this.draw();
   }
   /** set value (raw, unquantised); with feedback=true apply detent + haptics */
   setValue(raw, feedback = false) {
     const d = this.d, def = d.def || 0, u = this.u;
+    if (!Number.isFinite(raw)) raw = def;             // never let NaN reach the GPU
     let v = Math.min(d.max, Math.max(d.min, raw));
     if (feedback && Math.abs(v - def) < u * 1.6) v = def;           // sticky zero / default
     v = Math.round(v / d.step) * d.step;
@@ -1362,7 +1392,7 @@ async function renderMenu() {
       const r = await store.restoreBackup(await f.text());
       if (r.single) {
         if (!state.img) throw new Error('Mở ảnh trước rồi mới áp bản chỉnh');
-        state.params = Object.assign(defaultParams(), r.single.params); commit(); ensureLut(); layout(); render(); renderPanel();
+        state.params = sanitizeParams(r.single.params); commit(); ensureLut(); layout(); render(); renderPanel();
         toast(`Đã áp bản chỉnh của "${r.single.name}"`);
       } else {
         const have = new Set(state.userPresets.map((p) => p.id));
@@ -1410,10 +1440,16 @@ async function renderMenu() {
     eg.append(el('div', { class: 'look' },
       e.thumb ? el('img', { src: e.thumb, alt: '' }) : el('div', { class: 'ph' }),
       el('span', {}, e.name),
-      el('button', { class: 'btn small', disabled: !state.img, onclick: () => { state.params = Object.assign(defaultParams(), e.params); commit(); ensureLut(); layout(); render(); renderPanel(); toast('Đã áp bản chỉnh này cho ảnh đang mở'); } }, 'Áp vào ảnh này'),
+      el('button', { class: 'btn small', disabled: !state.img, onclick: () => { state.params = sanitizeParams(e.params); commit(); ensureLut(); layout(); render(); renderPanel(); toast('Đã áp bản chỉnh này cho ảnh đang mở'); } }, 'Áp vào ảnh này'),
       el('button', { class: 'btn small danger', onclick: async () => { await store.deleteEdit(e.key); renderMenu(); } }, 'Xoá')));
   }
   if (edits.length) body.append(eg);
+  try {
+    const gl = renderer.gl, dbg = gl.getExtension('WEBGL_debug_renderer_info');
+    const gpu = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+    body.append(sect('Thông tin GPU (gửi khi báo lỗi)'), el('p', { class: 'hint', style: 'user-select:text' },
+      `${gpu} · tối đa ${renderer.maxTex}px · ${gl.isContextLost() ? 'GPU ĐANG BỊ THU HỒI' : 'GPU ổn'} · ảnh ${state.img ? fullSize(state.img).join('×') + (state.img.isRaw ? ' RAW' : '') : '—'} · khung xem ${$('#view').width}×${$('#view').height}`));
+  } catch { /* ignore */ }
   body.append(sect('Ảnh xuất được lưu ở đâu?'), el('p', { class: 'hint' },
     'iPhone: bấm Xuất → bảng Chia sẻ → "Lưu hình ảnh" để vào app Ảnh, hoặc "Lưu vào Tệp". Nếu trình duyệt tải xuống trực tiếp, ảnh nằm trong app Tệp → Tải về (Downloads). Trong app Claude: chọn "Lưu" ở bảng hiện ra.'));
 }
@@ -1478,10 +1514,8 @@ async function doExport(maxSide, quality) {
     if (Math.max(ow, oh) > lim) { const s = lim / Math.max(ow, oh); ow = Math.round(ow * s); oh = Math.round(oh * s); }
     // scale point radii etc. are in uv space -> resolution independent
     ensureLut();
-    const px = renderer.renderToPixels(fullSrc, effectiveParams(state.params), { geo, aspectC, outW: ow, outH: oh, detailScale: Math.max(1, cw / ow), isRaw: img.isRaw });
+    const cv = renderer.renderTiledToCanvas(fullSrc, effectiveParams(state.params), { geo, aspectC, outW: ow, outH: oh, detailScale: Math.max(1, cw / ow), isRaw: img.isRaw });
     renderer.deleteSource(fullSrc); fullSrc = null;
-    const cv = document.createElement('canvas'); cv.width = ow; cv.height = oh;
-    cv.getContext('2d').putImageData(new ImageData(px, ow, oh), 0, 0);
     const blob = await new Promise((res, rej) => cv.toBlob((b) => (b ? res(b) : rej(new Error('Không tạo được JPEG'))), 'image/jpeg', quality));
     cv.width = cv.height = 1;
     const base = img.name.replace(/\.[^.]+$/, '');
