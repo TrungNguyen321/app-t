@@ -49,6 +49,12 @@ export function defaultParams() {
     grad: { on: false, y0: 0.0, y1: 0.5, exposure: 0, highlights: 0, temp: 0, saturation: 0 },
     // Chọn lọc (điểm như Snapseed)
     points: [],
+    // Chân dung: khuôn mặt, dáng người, da
+    faces: [],
+    body: { y0: 0.55, y1: 0.95, height: 0 },
+    boxes: [],
+    pushes: [],
+    skin: { smooth: 0, bright: 0, red: 0 },
   };
 }
 
@@ -129,3 +135,20 @@ export const PANELS = {
     ],
   },
 };
+
+export const FACE_SLIDERS = [
+  ['slim', 'Gầy mặt'], ['vline', 'Cằm V-line'], ['size', 'Thu nhỏ mặt'], ['chin', 'Dài cằm'],
+  ['eyeSize', 'Mắt to'], ['noseSlim', 'Thon mũi'], ['forehead', 'Trán cao'],
+];
+
+/** New face oval centred at (cx, cy) in crop uv; r = half-height in crop-height units. */
+export function newFace(cx, cy, aspect, r = 0.12) {
+  const rx = r * 0.78, ry = r;
+  const ex = (rx * 0.42) / aspect;
+  return {
+    cx, cy, rx, ry, angle: 0,
+    eyes: [[cx - ex, cy - ry * 0.12], [cx + ex, cy - ry * 0.12]],
+    nose: [cx, cy + ry * 0.2],
+    slim: 0, vline: 0, size: 0, chin: 0, eyeSize: 0, noseSlim: 0, forehead: 0,
+  };
+}

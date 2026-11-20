@@ -69,6 +69,9 @@ export class Renderer {
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
     this.curveTex = this._tex2D();
     this.blurTex = this._tex2D();
+    this.dispTex = this._tex2D();
+    this.dispOn = false;
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG16F, 1, 1, 0, gl.RG, gl.FLOAT, new Float32Array(2));
     this.lutTex = gl.createTexture();
     this.lut = null;
     this._curveKey = '';
@@ -125,6 +128,17 @@ export class Renderer {
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
   }
 
+  /** Liquify displacement field: Float32Array(n*n*2) in crop-uv units, or null */
+  setDisp(field, n) {
+    const gl = this.gl;
+    this.dispOn = !!field;
+    if (!field) return;
+    gl.bindTexture(gl.TEXTURE_2D, this.dispTex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG16F, n, n, 0, gl.RG, gl.FLOAT, field);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+  }
+
   setLut(lut) {
     const gl = this.gl;
     this.lut = lut;
@@ -155,7 +169,7 @@ export class Renderer {
   /**
    * Draw. target: null = canvas, or {fbo, w, h}. geo: Float32Array(9) mapping output uv -> source uv.
    */
-  draw(source, p, { geo, outW, outH, detailScale = 1, isRaw = false, original = false, fbo = null }) {
+  draw(source, p, { geo, outW, outH, detailScale = 1, isRaw = false, original = false, fbo = null, aspectC = 1 }) {
     const gl = this.gl;
     const { p: prog, u } = this.prog(source.u16);
     gl.useProgram(prog);
@@ -192,9 +206,9 @@ export class Renderer {
     f('uDehaze', p.dehaze / 100);
     f('uVibrance', p.vibrance / 100);
     f('uSaturation', p.saturation / 100);
-    gl.uniform1fv(u.uHslH, p.hslH.map((v) => v / 100));
-    gl.uniform1fv(u.uHslS, p.hslS.map((v) => v / 100));
-    gl.uniform1fv(u.uHslL, p.hslL.map((v) => v / 100));
+    gl.uniform4fv(u.uHslH, p.hslH.map((v) => v / 100));
+    gl.uniform4fv(u.uHslS, p.hslS.map((v) => v / 100));
+    gl.uniform4fv(u.uHslL, p.hslL.map((v) => v / 100));
     gl.uniform3f(u.uGradeSh, p.gradeShadowH, p.gradeShadowS / 100, p.gradeShadowL / 100);
     gl.uniform3f(u.uGradeMid, p.gradeMidH, p.gradeMidS / 100, p.gradeMidL / 100);
     gl.uniform3f(u.uGradeHi, p.gradeHighH, p.gradeHighS / 100, p.gradeHighL / 100);
@@ -221,7 +235,42 @@ export class Renderer {
       });
       gl.uniform4fv(u.uPtGeom, geom); gl.uniform4fv(u.uPtAdj, adj); gl.uniform3fv(u.uPtCol, col);
     }
+    this._warpUniforms(u, p, aspectC, original);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
+
+  _warpUniforms(u, p, aspectC, original) {
+    const gl = this.gl, f = (n, v) => u[n] && gl.uniform1f(u[n], v);
+    const b = p.body, sk = p.skin;
+    const off = original;
+    gl.uniform4f(u.uStretch, b.y0, b.y1, 1 + b.height / 100 * 0.35, !off && b.height > 0 && b.y1 > b.y0 ? 1 : 0);
+    f('uAspectC', aspectC);
+    const faces = off ? [] : p.faces.slice(0, 4);
+    gl.uniform1i(u.uFaceCount, faces.length);
+    if (faces.length) {
+      const A = new Float32Array(16), B = new Float32Array(16), C = new Float32Array(16), D = new Float32Array(16), E = new Float32Array(16);
+      faces.forEach((fc, i) => {
+        const X = (x) => x * aspectC;
+        A.set([X(fc.cx), fc.cy, fc.rx, fc.ry], i * 4);
+        B.set([fc.angle * Math.PI / 180, X(fc.eyes[0][0]), fc.eyes[0][1], X(fc.eyes[1][0])], i * 4);
+        C.set([fc.eyes[1][1], X(fc.nose[0]), fc.nose[1], 0], i * 4);
+        D.set([fc.slim / 100, fc.vline / 100, fc.size / 100, fc.chin / 100], i * 4);
+        E.set([fc.eyeSize / 100, fc.noseSlim / 100, fc.forehead / 100, 0], i * 4);
+      });
+      gl.uniform4fv(u.uFaceA, A); gl.uniform4fv(u.uFaceB, B); gl.uniform4fv(u.uFaceC, C); gl.uniform4fv(u.uFaceD, D); gl.uniform4fv(u.uFaceE, E);
+    }
+    const boxes = off ? [] : p.boxes.slice(0, 6);
+    gl.uniform1i(u.uBoxCount, boxes.length);
+    if (boxes.length) {
+      const A = new Float32Array(24), B = new Float32Array(24);
+      boxes.forEach((bx, i) => { A.set([bx.cx * aspectC, bx.cy, bx.hw, bx.hh], i * 4); B.set([bx.amount / 100, bx.angle * Math.PI / 180, 0, 0], i * 4); });
+      gl.uniform4fv(u.uBoxA, A); gl.uniform4fv(u.uBoxB, B);
+    }
+    gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, this.dispTex); gl.uniform1i(u.uDisp, 4);
+    f('uDispOn', !off && this.dispOn && p.pushes && p.pushes.length ? 1 : 0);
+    f('uSkinSmooth', off ? 0 : sk.smooth / 100);
+    f('uSkinBright', off ? 0 : sk.bright / 100);
+    f('uSkinRed', off ? 0 : sk.red / 100);
   }
 
   /** Render offscreen and read RGBA8 pixels (top row first). */

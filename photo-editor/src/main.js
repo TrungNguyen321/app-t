@@ -1,10 +1,21 @@
-import { defaultParams, clone, PANELS, HSL_BANDS } from './params.js';
+import { defaultParams, clone, PANELS, HSL_BANDS, FACE_SLIDERS, newFace } from './params.js';
 import { Renderer } from './renderer.js';
 import { loadRaw, loadImage, isRawName, fullSize } from './loader.js';
-import { computeGeometry, ASPECTS } from './geometry.js';
+import { computeGeometry, ASPECTS, outHeightScale, cropToDisplayV, displayToCropV } from './geometry.js';
 import { BUILTIN_PRESETS, parseXmp } from './presets.js';
 import { PROFILES, buildProfileLUT, parseCube } from './profiles.js';
 import { evalCurve } from './curves.js';
+import { DispCache, DISP_N } from './liquify.js';
+
+const dispCache = new DispCache();
+let dispKey = '';
+function ensureDisp(p, aspectC) {
+  const last = p.pushes[p.pushes.length - 1];
+  const key = p.pushes.length + ':' + aspectC.toFixed(4) + ':' + (last ? [last.ax, last.ay, last.bx, last.by, last.r].join(',') : '');
+  if (key === dispKey) return;
+  dispKey = key;
+  renderer.setDisp(dispCache.update(p.pushes, aspectC), DISP_N);
+}
 
 const $ = (s) => document.querySelector(s);
 const el = (tag, attrs = {}, ...kids) => {
@@ -32,11 +43,14 @@ const ICONS = {
   selective: '<circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="12" cy="12" r="2.2" fill="currentColor"/>',
   gradient: '<rect x="4" y="4" width="16" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M4 9h16" stroke="currentColor" stroke-width="1.6"/><path d="M4 14h16" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 2"/>',
   effects: '<rect x="3" y="5" width="18" height="14" rx="3" fill="none" stroke="currentColor" stroke-width="1.6"/><ellipse cx="12" cy="12" rx="5" ry="3.5" fill="none" stroke="currentColor" stroke-width="1.4"/>',
+  face: '<ellipse cx="12" cy="12" rx="6.5" ry="8.5" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="9.5" cy="10.5" r="1" fill="currentColor"/><circle cx="14.5" cy="10.5" r="1" fill="currentColor"/><path d="M9.5 15.5q2.5 2 5 0" fill="none" stroke="currentColor" stroke-width="1.4"/>',
+  body: '<circle cx="12" cy="4.5" r="2.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M12 7v7M8 10h8M12 14l-3 7M12 14l3 7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M20 4v16M18.5 6 20 4l1.5 2M18.5 18l1.5 2 1.5-2" fill="none" stroke="currentColor" stroke-width="1.2"/>',
+  skin: '<path d="M12 3c3 4 6 7 6 10.5a6 6 0 0 1-12 0C6 10 9 7 12 3z" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M9.5 14a2.5 2.5 0 0 0 2.5 2.5" fill="none" stroke="currentColor" stroke-width="1.4"/>',
   crop: '<path d="M7 3v14h14M3 7h14v14" fill="none" stroke="currentColor" stroke-width="1.6"/>',
 };
 const TABS = [
   ['looks', 'Kiểu'], ['profile', 'Profile'], ['light', 'Ánh sáng'], ['color', 'Màu'], ['presence', 'Hiện diện'],
-  ['hsl', 'HSL'], ['curve', 'Đường cong'], ['grading', 'Chỉnh màu'], ['selective', 'Chọn lọc'], ['gradient', 'Gradient'],
+  ['hsl', 'HSL'], ['curve', 'Đường cong'], ['grading', 'Chỉnh màu'], ['face', 'Khuôn mặt'], ['body', 'Dáng người'], ['skin', 'Da'], ['selective', 'Chọn lọc'], ['gradient', 'Gradient'],
   ['detail', 'Chi tiết'], ['effects', 'Hiệu ứng'], ['calibration', 'Hiệu chuẩn'], ['crop', 'Cắt xoay'],
 ];
 
@@ -45,6 +59,7 @@ const state = {
   img: null, src: null, params: defaultParams(), history: [], future: [], tab: 'looks',
   hslBand: 1, curveCh: 'rgb', selPoint: -1, original: false, lutCache: {}, customLut: null,
   thumbs: {}, userPresets: loadUserPresets(), activeLook: null, half: true,
+  selFace: -1, selBox: -1, bodyMode: 'height', brush: 0.08,
 };
 let renderer;
 try { renderer = new Renderer($('#view')); } catch (e) { showStatus('Lỗi: ' + e.message); }
@@ -109,7 +124,10 @@ function ensureLut() {
 }
 
 // ---- view layout & render ---------------------------------------------------------
-function geomFor(p, w, h) { return computeGeometry(p, w, h); }
+function geomFor(p, w, h) {
+  const g = computeGeometry(p, w, h);
+  return { geo: g.geo, cw: g.cw, ch: g.ch * outHeightScale(p), aspectC: g.cw / g.ch };
+}
 
 function layout() {
   if (!state.src) return;
@@ -134,9 +152,10 @@ function render() {
     raf = 0;
     if (!state.src || !renderer) return;
     const cv = $('#view');
-    const { geo, cw } = geomFor(state.params, state.src.w, state.src.h);
+    const { geo, cw, aspectC } = geomFor(state.params, state.src.w, state.src.h);
+    ensureDisp(state.params, aspectC);
     renderer.draw(state.src, state.params, {
-      geo, outW: cv.width, outH: cv.height, detailScale: Math.max(1, cw / cv.width),
+      geo, aspectC, outW: cv.width, outH: cv.height, detailScale: Math.max(1, cw / cv.width),
       isRaw: state.img.isRaw, original: state.original,
     });
     scheduleHist();
@@ -259,12 +278,12 @@ function renderPanel() {
     return;
   }
   ({ looks: panelLooks, profile: panelProfile, hsl: panelHsl, curve: panelCurve, selective: panelSelective,
-    gradient: panelGradient, crop: panelCrop })[t](body);
+    gradient: panelGradient, crop: panelCrop, face: panelFace, body: panelBody, skin: panelSkin })[t](body);
 }
 
 // ---- Looks (presets) ------------------------------------------------------------
 function applyPreset(params, id) {
-  const keepGeo = ['rotate90', 'flipH', 'straighten', 'aspect', 'zoom', 'panX', 'panY'];
+  const keepGeo = ['rotate90', 'flipH', 'straighten', 'aspect', 'zoom', 'panX', 'panY', 'faces', 'body', 'boxes', 'pushes', 'skin'];
   const next = Object.assign(defaultParams(), clone(params));
   for (const k of keepGeo) next[k] = state.params[k];
   if (next.profile === 'custom' && !state.customLut) next.profile = '';
@@ -276,15 +295,15 @@ function makeThumbs() {
   if (!state.img || !renderer) return;
   const items = [...BUILTIN_PRESETS, ...state.userPresets];
   const base = { ...defaultParams(), rotate90: state.params.rotate90, flipH: state.params.flipH, aspect: 1 };
-  const { geo } = geomFor(base, state.src.w, state.src.h);
+  const { geo, aspectC } = geomFor(base, state.src.w, state.src.h);
   const S = 132, cv = document.createElement('canvas'); cv.width = S; cv.height = S;
   const ctx = cv.getContext('2d');
   const savedLut = renderer.lut;
   const one = (id, params) => {
-    const p = Object.assign(defaultParams(), clone(params), { rotate90: base.rotate90, flipH: base.flipH, aspect: 1, zoom: 1, panX: 0, panY: 0, straighten: 0, points: [] });
+    const p = Object.assign(defaultParams(), clone(params), { rotate90: base.rotate90, flipH: base.flipH, aspect: 1, zoom: 1, panX: 0, panY: 0, straighten: 0, points: [], faces: [], boxes: [], pushes: [], body: defaultParams().body });
     const lut = p.profile && p.profile !== 'custom' ? (state.lutCache[p.profile] ||= buildProfileLUT(p.profile)) : null;
     renderer.setLut(lut);
-    const px = renderer.renderToPixels(state.src, p, { geo, outW: S, outH: S, detailScale: state.src.w / S, isRaw: state.img.isRaw });
+    const px = renderer.renderToPixels(state.src, p, { geo, aspectC, outW: S, outH: S, detailScale: state.src.w / S, isRaw: state.img.isRaw });
     ctx.putImageData(new ImageData(px, S, S), 0, 0);
     state.thumbs[id] = cv.toDataURL('image/jpeg', 0.8);
   };
@@ -330,7 +349,7 @@ function panelLooks(body) {
   body.append(el('div', { class: 'row' },
     el('button', { class: 'btn small', disabled: !state.img, onclick: () => {
       const name = `Kiểu ${state.userPresets.length + 1}`;
-      const p = clone(state.params); p.points = [];
+      const p = clone(state.params); p.points = []; p.faces = []; p.boxes = []; p.pushes = []; p.body = defaultParams().body;
       if (p.profile === 'custom') p.profile = '';
       state.userPresets.push({ id: 'u' + Date.now(), name, params: p });
       saveUserPresets(); makeThumbs(); toast(`Đã lưu "${name}"`);
@@ -491,6 +510,82 @@ function panelCrop(body) {
   body.append(el('p', { class: 'hint' }, 'Kéo ảnh để chọn vùng cắt khi đã thu phóng hoặc đổi tỉ lệ.'));
 }
 
+// ---- Portrait: face ----------------------------------------------------------------
+function cropAspect() { return geomFor(state.params, state.src.w, state.src.h).aspectC; }
+function panelFace(body) {
+  const faces = state.params.faces;
+  body.append(title('Khuôn mặt', el('button', { class: 'btn small', disabled: faces.length >= 4, onclick: () => {
+    faces.push(newFace(0.5, displayToCropV(state.params, 0.4), cropAspect()));
+    state.selFace = faces.length - 1; render(); commit(); renderPanel(); drawOverlay();
+  } }, '+ Thêm khuôn mặt')));
+  if (!faces.length) {
+    body.append(el('p', { class: 'hint' }, 'Chạm vào giữa khuôn mặt trên ảnh để đặt khung (tối đa 4 người). Sau đó kéo khung cho ôm mặt (trán đến cằm), kéo 2 chấm mắt và chấm mũi vào đúng chỗ, rồi dùng các thanh trượt.'));
+    return;
+  }
+  if (state.selFace < 0 || state.selFace >= faces.length) state.selFace = 0;
+  const chips = el('div', { class: 'chips' });
+  faces.forEach((f, i) => chips.append(el('button', { class: 'chip' + (i === state.selFace ? ' active' : ''), onclick: () => { state.selFace = i; renderPanel(); drawOverlay(); } }, `Mặt ${i + 1}`)));
+  body.append(chips);
+  const f = faces[state.selFace];
+  FACE_SLIDERS.forEach(([k, n]) => body.append(slider(n, -100, 100, 1, () => f[k], (v) => { f[k] = v; })));
+  body.append(slider('Nghiêng khung', -45, 45, 1, () => f.angle, (v) => { f.angle = v; drawOverlay(); }));
+  body.append(el('div', { class: 'row' },
+    el('button', { class: 'btn small', onclick: () => { const c = clone(f); faces.forEach((o) => { for (const [k] of FACE_SLIDERS) o[k] = c[k]; }); render(); commit(); toast('Đã áp cho mọi khuôn mặt'); } }, 'Áp cho tất cả'),
+    el('button', { class: 'btn small danger', onclick: () => { faces.splice(state.selFace, 1); state.selFace = faces.length - 1; render(); commit(); renderPanel(); drawOverlay(); } }, 'Xoá khung')));
+  body.append(el('p', { class: 'hint' }, 'Gợi ý tự nhiên: Gầy mặt 20–35, Cằm V 15–30, Mắt to 10–20. Giữ nút so sánh để xem trước/sau.'));
+}
+
+// ---- Portrait: body ----------------------------------------------------------------
+function panelBody(body) {
+  const p = state.params;
+  body.append(title('Dáng người'));
+  const chips = el('div', { class: 'chips' });
+  [['height', 'Kéo cao chân'], ['slim', 'Thon gọn'], ['push', 'Đẩy tự do']].forEach(([k, n]) =>
+    chips.append(el('button', { class: 'chip' + (state.bodyMode === k ? ' active' : ''), onclick: () => { state.bodyMode = k; renderPanel(); drawOverlay(); } }, n)));
+  body.append(chips);
+  if (state.bodyMode === 'height') {
+    body.append(slider('Độ cao (chân dài)', 0, 100, 1, () => p.body.height, (v) => { p.body.height = v; layout(); }));
+    body.append(el('p', { class: 'hint' }, 'Kéo vạch "Bắt đầu" xuống ngang hông/đầu gối và vạch "Kết thúc" xuống mắt cá chân. Chỉ phần giữa 2 vạch được kéo dài, nên đặt vạch ở chỗ nền đơn giản để không lộ.'));
+  } else if (state.bodyMode === 'slim') {
+    body.append(el('div', { class: 'row', style: 'margin-top:0' }, el('button', { class: 'btn small', disabled: p.boxes.length >= 6, onclick: () => {
+      p.boxes.push({ cx: 0.5, cy: displayToCropV(p, 0.6), hw: 0.08, hh: 0.1, amount: 30, angle: 0 });
+      state.selBox = p.boxes.length - 1; render(); commit(); renderPanel(); drawOverlay();
+    } }, '+ Thêm vùng thon')));
+    if (!p.boxes.length) body.append(el('p', { class: 'hint' }, 'Chạm vào eo, bắp tay hoặc đùi để đặt vùng thon (tối đa 6). Vùng sẽ bóp nhỏ theo chiều ngang về giữa khung.'));
+    else {
+      if (state.selBox < 0 || state.selBox >= p.boxes.length) state.selBox = 0;
+      const ch2 = el('div', { class: 'chips' });
+      p.boxes.forEach((b, i) => ch2.append(el('button', { class: 'chip' + (i === state.selBox ? ' active' : ''), onclick: () => { state.selBox = i; renderPanel(); drawOverlay(); } }, `Vùng ${i + 1}`)));
+      body.append(ch2);
+      const b = p.boxes[state.selBox];
+      body.append(slider('Độ thon', -100, 100, 1, () => b.amount, (v) => { b.amount = v; }));
+      body.append(slider('Nghiêng', -60, 60, 1, () => b.angle, (v) => { b.angle = v; drawOverlay(); }));
+      body.append(el('div', { class: 'row' }, el('button', { class: 'btn small danger', onclick: () => { p.boxes.splice(state.selBox, 1); state.selBox = p.boxes.length - 1; render(); commit(); renderPanel(); drawOverlay(); } }, 'Xoá vùng')));
+    }
+  } else {
+    body.append(slider('Cỡ cọ', 2, 30, 1, () => Math.round(state.brush * 100), (v) => { state.brush = v / 100; }, { def: 8 }));
+    body.append(el('div', { class: 'row', style: 'margin-top:0' },
+      el('button', { class: 'btn small', disabled: !p.pushes.length, onclick: () => {
+        // remove the last stroke
+        const id = p.pushes.length ? p.pushes[p.pushes.length - 1].s : null;
+        while (p.pushes.length && p.pushes[p.pushes.length - 1].s === id) p.pushes.pop();
+        render(); commit(); renderPanel();
+      } }, 'Bỏ nét cuối'),
+      el('button', { class: 'btn small danger', disabled: !p.pushes.length, onclick: () => { p.pushes = []; render(); commit(); renderPanel(); } }, 'Xoá hết')));
+    body.append(el('p', { class: 'hint' }, 'Kéo ngón tay trên ảnh để đẩy vùng ảnh theo hướng kéo (như Liquify): đẩy eo vào trong, nâng vai, chỉnh tay. Kéo ngắn, nhẹ nhiều lần sẽ tự nhiên hơn. Chú ý nền thẳng (cột, đường chân trời) dễ bị cong.'));
+  }
+}
+
+// ---- Portrait: skin ----------------------------------------------------------------
+function panelSkin(body) {
+  const sk = state.params.skin;
+  body.append(title('Da'));
+  body.append(slider('Làm mịn da', 0, 100, 1, () => sk.smooth, (v) => { sk.smooth = v; }));
+  body.append(slider('Sáng da', -100, 100, 1, () => sk.bright, (v) => { sk.bright = v; }));
+  body.append(slider('Giảm đỏ da', 0, 100, 1, () => sk.red, (v) => { sk.red = v; }));
+  body.append(el('p', { class: 'hint' }, 'Tự nhận vùng da theo màu (không cần tô). Nếu tóc/nền màu gần da bị ảnh hưởng, hãy giảm mức hoặc dùng Chọn lọc.'));
+}
+
 // ---- overlay interactions ------------------------------------------------------------
 function drawOverlay() {
   const ov = $('#overlay'); ov.innerHTML = '';
@@ -511,6 +606,38 @@ function drawOverlay() {
     ov.append(el('div', { class: 'gline end', style: `top:${g.y1 * H}px` }, el('span', {}, '0')));
   } else if (state.tab === 'crop') {
     ov.append(el('div', { class: 'cropgrid' }));
+  } else if (state.tab === 'face') {
+    const p = state.params, Hc = H / outHeightScale(p);
+    p.faces.forEach((f, i) => {
+      const sel = i === state.selFace;
+      const cx = f.cx * W, cy = cropToDisplayV(p, f.cy) * H, rx = f.rx * Hc, ry = f.ry * Hc;
+      ov.append(el('div', { class: 'faceov' + (sel ? ' sel' : ''), style: `left:${cx - rx}px;top:${cy - ry}px;width:${2 * rx}px;height:${2 * ry}px;transform:rotate(${f.angle}deg)` },
+        el('span', { class: 'flabel' }, String(i + 1))));
+      if (sel) {
+        ov.append(el('div', { class: 'hdl', style: `left:${cx + rx * 0.72}px;top:${cy + ry * 0.72}px` }));
+        f.eyes.forEach((e) => ov.append(el('div', { class: 'dot eye', style: `left:${e[0] * W}px;top:${cropToDisplayV(p, e[1]) * H}px` })));
+        ov.append(el('div', { class: 'dot nose', style: `left:${f.nose[0] * W}px;top:${cropToDisplayV(p, f.nose[1]) * H}px` }));
+      }
+    });
+  } else if (state.tab === 'body') {
+    const p = state.params, Hc = H / outHeightScale(p);
+    if (state.bodyMode === 'height') {
+      const k = outHeightScale(p) > 1;
+      const yA = cropToDisplayV(p, p.body.y0) * H, yB = k ? cropToDisplayV(p, p.body.y1) * H : p.body.y1 * H;
+      ov.append(el('div', { class: 'hband', style: `top:${yA}px;height:${Math.max(0, yB - yA)}px` }));
+      ov.append(el('div', { class: 'gline', style: `top:${yA}px` }, el('span', { class: 'wide' }, 'Bắt đầu')));
+      ov.append(el('div', { class: 'gline end', style: `top:${yB}px` }, el('span', { class: 'wide' }, 'Kết thúc')));
+    } else if (state.bodyMode === 'slim') {
+      p.boxes.forEach((b, i) => {
+        const cx = b.cx * W, cy = cropToDisplayV(p, b.cy) * H, hw = b.hw * Hc, hh = b.hh * Hc;
+        ov.append(el('div', { class: 'boxov' + (i === state.selBox ? ' sel' : ''), style: `left:${cx - hw}px;top:${cy - hh}px;width:${2 * hw}px;height:${2 * hh}px;transform:rotate(${b.angle}deg)` },
+          el('span', { class: 'flabel' }, '→ ' + (i + 1) + ' ←')));
+        if (i === state.selBox) ov.append(el('div', { class: 'hdl', style: `left:${cx + hw}px;top:${cy + hh}px` }));
+      });
+    } else if (state.brushPos) {
+      const r = state.brush * Hc;
+      ov.append(el('div', { class: 'brush', style: `left:${state.brushPos[0] * W - r}px;top:${state.brushPos[1] * H - r}px;width:${2 * r}px;height:${2 * r}px` }));
+    }
   }
 }
 
@@ -534,6 +661,10 @@ function drawOverlay() {
       mode = { t: 'grad', k: d0 <= d1 ? 'y0' : 'y1' };
     } else if (state.tab === 'crop') {
       mode = { t: 'pan', px: state.params.panX, py: state.params.panY };
+    } else if (state.tab === 'face') {
+      mode = faceDown(x, y, r);
+    } else if (state.tab === 'body') {
+      mode = bodyDown(x, y, r);
     } else mode = null;
   });
   ov.addEventListener('pointermove', (e) => {
@@ -545,6 +676,8 @@ function drawOverlay() {
       p.col = null; drawOverlay(); render();
     } else if (mode.t === 'grad') {
       state.params.grad[mode.k] = Math.min(1, Math.max(0, y)); drawOverlay(); render();
+    } else if (mode.t && mode.t.startsWith('f-') || mode.t && mode.t.startsWith('b-')) {
+      portraitMove(mode, x, y, r, e);
     } else if (mode.t === 'pan') {
       const p = state.params;
       p.panX = Math.min(1, Math.max(-1, mode.px - (e.clientX - start.cx) / r.width * 2 / Math.max(1, p.zoom)));
@@ -558,9 +691,9 @@ function drawOverlay() {
     if (mode.t === 'newpt' && !moved && state.params.points.length < 8) {
       // sample colour from the image without the point adjustments
       const saved = state.params.points; state.params.points = [];
-      const { geo, cw } = geomFor(state.params, state.src.w, state.src.h);
+      const { geo, cw, aspectC } = geomFor(state.params, state.src.w, state.src.h);
       const cv = $('#view');
-      renderer.draw(state.src, state.params, { geo, outW: cv.width, outH: cv.height, detailScale: Math.max(1, cw / cv.width), isRaw: state.img.isRaw });
+      renderer.draw(state.src, state.params, { geo, aspectC, outW: cv.width, outH: cv.height, detailScale: Math.max(1, cw / cv.width), isRaw: state.img.isRaw });
       const col = samplePointColor(x, y);
       state.params.points = saved;
       saved.push({ x, y, r: 0.18, bright: 0, contrast: 0, sat: 0, warmth: 0, col });
@@ -569,15 +702,106 @@ function drawOverlay() {
     } else if (mode.t === 'pt' && moved) {
       const p = state.params.points[mode.i];
       const saved = state.params.points; state.params.points = [];
-      const { geo, cw } = geomFor(state.params, state.src.w, state.src.h);
+      const { geo, cw, aspectC } = geomFor(state.params, state.src.w, state.src.h);
       const cv = $('#view');
-      renderer.draw(state.src, state.params, { geo, outW: cv.width, outH: cv.height, detailScale: Math.max(1, cw / cv.width), isRaw: state.img.isRaw });
+      renderer.draw(state.src, state.params, { geo, aspectC, outW: cv.width, outH: cv.height, detailScale: Math.max(1, cw / cv.width), isRaw: state.img.isRaw });
       p.col = samplePointColor(p.x, p.y);
       state.params.points = saved; render(); commit();
-    } else if (mode.t === 'grad' || mode.t === 'pan') commit();
+    } else if (mode.t === 'f-new' && !moved && state.params.faces.length < 4) {
+      const p = state.params;
+      p.faces.push(newFace(x, displayToCropV(p, y), cropAspect()));
+      state.selFace = p.faces.length - 1; render(); commit(); renderPanel(); drawOverlay();
+    } else if (mode.t === 'b-new' && !moved && state.params.boxes.length < 6) {
+      const p = state.params;
+      p.boxes.push({ cx: x, cy: displayToCropV(p, y), hw: 0.07, hh: 0.09, amount: 30, angle: 0 });
+      state.selBox = p.boxes.length - 1; render(); commit(); renderPanel(); drawOverlay();
+    } else if (mode.t === 'b-push') {
+      state.brushPos = null; drawOverlay(); commit(); renderPanel();
+    } else if (mode.t === 'grad' || mode.t === 'pan' || (mode.t.startsWith('f-') || mode.t.startsWith('b-')) && moved) commit();
     mode = null;
   });
 })();
+
+// hit-testing & dragging for face / body overlays (x, y = display uv)
+function faceDown(x, y, r) {
+  const p = state.params, W = r.width, H = r.height, Hc = H / outHeightScale(p);
+  const f = p.faces[state.selFace];
+  const near = (ux, uy, px = 18) => Math.hypot((ux - x) * W, (cropToDisplayV(p, uy) - y) * H) < px;
+  if (f) {
+    for (let k = 0; k < 2; k++) if (near(f.eyes[k][0], f.eyes[k][1], 14)) return { t: 'f-eye', k };
+    if (near(f.nose[0], f.nose[1], 14)) return { t: 'f-nose' };
+    const hx = f.cx + f.rx * 0.72 * Hc / W, hy = cropToDisplayV(p, f.cy) + f.ry * 0.72 * Hc / H;
+    if (Math.hypot((hx - x) * W, (hy - y) * H) < 22) return { t: 'f-size', f0: clone(f), x0: x, y0: y };
+  }
+  const hit = p.faces.findIndex((o) => {
+    const dx = (x - o.cx) * W / (o.rx * Hc), dy = (y - cropToDisplayV(p, o.cy)) * H / (o.ry * Hc);
+    return dx * dx + dy * dy < 1;
+  });
+  if (hit >= 0) {
+    if (hit !== state.selFace) { state.selFace = hit; renderPanel(); drawOverlay(); }
+    return { t: 'f-move', f0: clone(p.faces[hit]), x0: x, y0: displayToCropV(p, y) };
+  }
+  return { t: 'f-new' };
+}
+function bodyDown(x, y, r) {
+  const p = state.params, W = r.width, H = r.height, Hc = H / outHeightScale(p);
+  if (state.bodyMode === 'height') {
+    const yA = cropToDisplayV(p, p.body.y0), yB = outHeightScale(p) > 1 ? cropToDisplayV(p, p.body.y1) : p.body.y1;
+    return { t: 'b-line', k: Math.abs(yA - y) <= Math.abs(yB - y) ? 'y0' : 'y1' };
+  }
+  if (state.bodyMode === 'slim') {
+    const b = p.boxes[state.selBox];
+    if (b) {
+      const hx = b.cx + b.hw * Hc / W, hy = cropToDisplayV(p, b.cy) + b.hh * Hc / H;
+      if (Math.hypot((hx - x) * W, (hy - y) * H) < 22) return { t: 'b-size', b0: clone(b), x0: x, y0: y };
+    }
+    const hit = p.boxes.findIndex((o) => Math.abs(x - o.cx) * W < o.hw * Hc && Math.abs(y - cropToDisplayV(p, o.cy)) * H < o.hh * Hc);
+    if (hit >= 0) {
+      if (hit !== state.selBox) { state.selBox = hit; renderPanel(); drawOverlay(); }
+      return { t: 'b-move', b0: clone(p.boxes[hit]), x0: x, y0: displayToCropV(p, y) };
+    }
+    return { t: 'b-new' };
+  }
+  state.brushPos = [x, y];
+  return { t: 'b-push', last: [x, displayToCropV(p, y)], sid: Date.now() };
+}
+function portraitMove(mode, x, y, r) {
+  const p = state.params, W = r.width, H = r.height, Hc = H / outHeightScale(p);
+  const cy = displayToCropV(p, y);
+  if (mode.t === 'f-move') {
+    const f = p.faces[state.selFace], dx = x - mode.x0, dy = cy - mode.y0, o = mode.f0;
+    f.cx = o.cx + dx; f.cy = o.cy + dy;
+    f.eyes = o.eyes.map((e) => [e[0] + dx, e[1] + dy]); f.nose = [o.nose[0] + dx, o.nose[1] + dy];
+  } else if (mode.t === 'f-size') {
+    const f = p.faces[state.selFace], o = mode.f0;
+    const sx = Math.max(0.2, 1 + ((x - mode.x0) * W) / (o.rx * Hc * 0.72)), sy = Math.max(0.2, 1 + ((y - mode.y0) * H) / (o.ry * Hc * 0.72));
+    f.rx = o.rx * sx; f.ry = o.ry * sy;
+    f.eyes = o.eyes.map((e) => [o.cx + (e[0] - o.cx) * sx, o.cy + (e[1] - o.cy) * sy]);
+    f.nose = [o.cx + (o.nose[0] - o.cx) * sx, o.cy + (o.nose[1] - o.cy) * sy];
+  } else if (mode.t === 'f-eye') {
+    p.faces[state.selFace].eyes[mode.k] = [x, cy];
+  } else if (mode.t === 'f-nose') {
+    p.faces[state.selFace].nose = [x, cy];
+  } else if (mode.t === 'b-line') {
+    const v = Math.min(1, Math.max(0, cy));
+    if (mode.k === 'y0') p.body.y0 = Math.min(v, p.body.y1 - 0.02); else p.body.y1 = Math.max(v, p.body.y0 + 0.02);
+    layout();
+  } else if (mode.t === 'b-move') {
+    const b = p.boxes[state.selBox]; b.cx = mode.b0.cx + (x - mode.x0); b.cy = mode.b0.cy + (cy - mode.y0);
+  } else if (mode.t === 'b-size') {
+    const b = p.boxes[state.selBox], o = mode.b0;
+    b.hw = Math.max(0.01, o.hw + ((x - mode.x0) * W) / Hc); b.hh = Math.max(0.01, o.hh + ((y - mode.y0) * H) / Hc);
+  } else if (mode.t === 'b-push') {
+    state.brushPos = [x, y];
+    const [lx, ly] = mode.last, a = cropAspect();
+    const dist = Math.hypot((x - lx) * a, cy - ly);
+    if (dist > state.brush * 0.15) {
+      p.pushes.push({ ax: lx, ay: ly, bx: x, by: cy, r: state.brush, s: mode.sid });
+      mode.last = [x, cy];
+    }
+  }
+  drawOverlay(); render();
+}
 
 // ---- export ----------------------------------------------------------------------------
 const dlg = $('#exportDlg');
@@ -625,12 +849,13 @@ async function doExport(maxSide, quality) {
     const [fw, fh] = fullSize(img);
     if (Math.max(fw, fh) > renderer.maxTex) throw new Error(`Ảnh quá lớn cho GPU (${fw}×${fh}, tối đa ${renderer.maxTex})`);
     fullSrc = renderer.makeSource(full);
-    const { geo, cw, ch } = geomFor(state.params, fw, fh);
+    const { geo, cw, ch, aspectC } = geomFor(state.params, fw, fh);
+    ensureDisp(state.params, aspectC);
     let ow = Math.round(cw), oh = Math.round(ch);
     const lim = Math.min(maxSide || Infinity, renderer.maxTex);
     if (Math.max(ow, oh) > lim) { const s = lim / Math.max(ow, oh); ow = Math.round(ow * s); oh = Math.round(oh * s); }
     // scale point radii etc. are in uv space -> resolution independent
-    const px = renderer.renderToPixels(fullSrc, state.params, { geo, outW: ow, outH: oh, detailScale: Math.max(1, cw / ow), isRaw: img.isRaw });
+    const px = renderer.renderToPixels(fullSrc, state.params, { geo, aspectC, outW: ow, outH: oh, detailScale: Math.max(1, cw / ow), isRaw: img.isRaw });
     renderer.deleteSource(fullSrc); fullSrc = null;
     const cv = document.createElement('canvas'); cv.width = ow; cv.height = oh;
     cv.getContext('2d').putImageData(new ImageData(px, ow, oh), 0, 0);

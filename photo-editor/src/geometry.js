@@ -36,3 +36,25 @@ export function computeGeometry(p, srcW, srcH) {
   const geo = new Float32Array([a[0] - o[0], a[1] - o[1], 0, b[0] - o[0], b[1] - o[1], 0, o[0], o[1], 1]);
   return { geo, cw, ch };
 }
+
+/** Height-stretch helpers (body.height > 0 stretches the band y0..y1 vertically). */
+export function stretchFactor(p) {
+  const b = p.body; return b.height > 0 && b.y1 > b.y0 ? 1 + b.height / 100 * 0.35 : 1;
+}
+export function outHeightScale(p) {
+  const k = stretchFactor(p); return 1 + (p.body.y1 - p.body.y0) * (k - 1);
+}
+/** crop v -> display v */
+export function cropToDisplayV(p, v) {
+  const k = stretchFactor(p), { y0, y1 } = p.body, H = outHeightScale(p);
+  if (k === 1) return v;
+  const t = v < y0 ? v : v < y1 ? y0 + (v - y0) * k : v + (y1 - y0) * (k - 1);
+  return t / H;
+}
+/** display v -> crop v */
+export function displayToCropV(p, v) {
+  const k = stretchFactor(p), { y0, y1 } = p.body, H = outHeightScale(p), L = y1 - y0;
+  if (k === 1) return v;
+  const t = v * H;
+  return t < y0 ? t : t < y0 + L * k ? y0 + (t - y0) / k : t - L * (k - 1);
+}

@@ -39,7 +39,7 @@ uniform vec3 uWB;
 uniform mat3 uCal;
 uniform float uExposure, uContrast, uHighlights, uShadows, uWhites, uBlacks;
 uniform float uTexture, uClarity, uDehaze, uVibrance, uSaturation;
-uniform float uHslH[8], uHslS[8], uHslL[8];
+uniform vec4 uHslH[2], uHslS[2], uHslL[2];
 uniform vec3 uGradeSh, uGradeMid, uGradeHi;   // (hue deg, sat 0..1, lum -1..1)
 uniform float uGradeBlend, uGradeBalance, uShadowTint;
 uniform float uSharpen, uNoise;
@@ -50,6 +50,21 @@ uniform int uPointCount;
 uniform vec4 uPtGeom[8];   // x, y, radius, -
 uniform vec4 uPtAdj[8];    // bright, contrast, sat, warmth  (-1..1)
 uniform vec3 uPtCol[8];
+// ---- reshape (warp) ----
+uniform vec4 uStretch;      // y0, y1, factor, on    (display v -> crop v)
+uniform float uAspectC;     // crop aspect (w/h) before stretch
+uniform int uFaceCount;
+uniform vec4 uFaceA[4];     // cx, cy, rx, ry   (q units: x*aspect, y)
+uniform vec4 uFaceB[4];     // angle, eyeLx, eyeLy, eyeRx
+uniform vec4 uFaceC[4];     // eyeRy, noseX, noseY, -
+uniform vec4 uFaceD[4];     // slim, vline, size, chin   (-1..1)
+uniform vec4 uFaceE[4];     // eyes, nose, forehead, -
+uniform int uBoxCount;
+uniform vec4 uBoxA[6];      // cx, cy, hw, hh
+uniform vec4 uBoxB[6];      // amount, angle, -, -
+uniform sampler2D uDisp;    // liquify displacement field (crop uv), RG
+uniform float uDispOn;
+uniform float uSkinSmooth, uSkinBright, uSkinRed;
 
 const float HUES[8] = float[8](0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 275.0, 315.0);
 
@@ -105,13 +120,104 @@ float vnoise(vec2 p) {
   return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), f.x), f.y);
 }
 
+mat2 rot(float a) { float c = cos(a), s = sin(a); return mat2(c, s, -s, c); }
+
+// inverse warp: display uv -> crop uv (pre-geometry)
+vec2 warp(vec2 uv) {
+  // leg/height stretch (piecewise-linear band)
+  if (uStretch.w > 0.5) {
+    float L = uStretch.y - uStretch.x, k = uStretch.z;
+    float t = uv.y * (1.0 + L * (k - 1.0));
+    float y0 = uStretch.x;
+    uv.y = t < y0 ? t : (t < y0 + L * k ? y0 + (t - y0) / k : t - L * (k - 1.0));
+  }
+  if (uDispOn > 0.5) uv += texture(uDisp, uv).rg;
+  vec2 q = vec2(uv.x * uAspectC, uv.y);
+  // slimming boxes: squeeze horizontally toward the box centre line
+  for (int i = 0; i < 6; i++) {
+    if (i >= uBoxCount) break;
+    vec4 b = uBoxA[i];
+    vec2 l = rot(-uBoxB[i].y) * (q - b.xy);
+    float wy = 1.0 - smoothstep(0.55, 1.0, abs(l.y) / b.w);
+    float ax = abs(l.x) / b.z;
+    float wx = 1.0 - smoothstep(0.9, 1.7, ax);
+    l.x *= 1.0 + uBoxB[i].x * 0.22 * wy * wx;
+    q = b.xy + rot(uBoxB[i].y) * l;
+  }
+  // faces
+  for (int i = 0; i < 4; i++) {
+    if (i >= uFaceCount) break;
+    vec4 A = uFaceA[i], B = uFaceB[i], C = uFaceC[i], D = uFaceD[i], E = uFaceE[i];
+    vec2 c = A.xy, rr = A.zw;
+    mat2 Ri = rot(-B.x), Rf = rot(B.x);
+    // eyes (bulge)
+    if (E.x != 0.0) {
+      float re = rr.x * 0.34;
+      for (int e = 0; e < 2; e++) {
+        vec2 ep = e == 0 ? B.yz : vec2(B.w, C.x);
+        vec2 d = q - ep;
+        float t = length(d) / re;
+        if (t < 1.0) { float f = 1.0 - t * t; q = ep + d * (1.0 - E.x * 0.32 * f * f); }
+      }
+    }
+    // nose (narrow)
+    if (E.y != 0.0) {
+      vec2 np = C.yz;
+      vec2 l = Ri * (q - np);
+      float g = exp(-(l.x * l.x) / (rr.x * rr.x * 0.06) - (l.y * l.y) / (rr.y * rr.y * 0.08));
+      l.x *= 1.0 + E.y * 0.3 * g;
+      q = np + Rf * l;
+    }
+    vec2 l = Ri * (q - c) / rr;       // unit-oval coordinates, y down
+    float rl = length(l);
+    float fall = 1.0 - smoothstep(0.75, 1.45, rl);
+    // face size (uniform scale)
+    l *= 1.0 + D.z * 0.12 * fall;
+    // slim cheeks + jaw (horizontal), stronger below the eyes
+    float wS = fall * smoothstep(-0.55, 0.25, l.y);
+    l.x *= 1.0 + D.x * 0.13 * wS;
+    // V-line: jaw only
+    float wV = (1.0 - smoothstep(0.85, 1.4, rl)) * smoothstep(0.15, 0.85, l.y);
+    l.x *= 1.0 + D.y * 0.2 * wV;
+    // chin length (vertical around chin)
+    float gc = exp(-(l.x * l.x) / 0.18 - pow(l.y - 0.95, 2.0) / 0.12);
+    l.y -= D.w * 0.12 * gc;
+    // forehead (top) height
+    float gf = exp(-(l.x * l.x) / 0.5 - pow(l.y + 0.95, 2.0) / 0.12);
+    l.y += E.z * 0.1 * gf;
+    q = c + Rf * (l * rr);
+  }
+  return vec2(q.x / uAspectC, q.y);
+}
+
 void main() {
-  vec2 suv = (uGeo * vec3(vUv, 1.0)).xy;
+  vec2 suv = (uGeo * vec3(warp(vUv), 1.0)).xy;
   if (suv.x < -0.001 || suv.y < -0.001 || suv.x > 1.001 || suv.y > 1.001) { outColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
   vec3 lin = src(suv);
   if (uOriginal > 0.5) {
     vec3 o = uIsRaw > 0.5 ? toSrgb(lin * exp2(0.35)) : toSrgb(lin);
     outColor = vec4(o, 1.0); return;
+  }
+
+  // ---- skin (bilateral smoothing on skin tones) ------------------------------
+  float skinM = 0.0;
+  if (uSkinSmooth > 0.0 || uSkinBright != 0.0 || uSkinRed > 0.0) {
+    vec3 sh = rgb2hsv(toSrgb(lin * uWB * exp2(uExposure)));
+    float hd = mod(sh.x * 360.0 + 30.0, 360.0);          // skin ~ 0..50 deg -> 30..80
+    skinM = smoothstep(18.0, 32.0, hd) * (1.0 - smoothstep(75.0, 95.0, hd))
+          * smoothstep(0.08, 0.2, sh.y) * (1.0 - smoothstep(0.65, 0.85, sh.y)) * smoothstep(0.12, 0.3, sh.z);
+    if (uSkinSmooth > 0.0 && skinM > 0.0) {
+      vec2 px = uDetailScale / uSrcSize * max(1.5, uSrcSize.y / 450.0);
+      vec3 acc = lin; float wsum = 1.0; float l0 = sqrt(luma(lin));
+      for (int j = 1; j <= 2; j++) for (int a = 0; a < 8; a++) {
+        float ang = float(a) * 0.785398 + float(j) * 0.39;
+        vec3 s = src(suv + vec2(cos(ang), sin(ang)) * px * float(j) * 1.6);
+        float d = sqrt(luma(s)) - l0;
+        float w = exp(-d * d / 0.0035);
+        acc += s * w; wsum += w;
+      }
+      lin = mix(lin, acc / wsum, skinM * uSkinSmooth);
+    }
   }
 
   // ---- linear stage -------------------------------------------------------
@@ -183,13 +289,18 @@ void main() {
   }
   c = max(c, 0.0);
 
+  if (skinM > 0.0) {
+    c *= 1.0 + uSkinBright * 0.22 * skinM;
+    float lr = luma(c);
+    c = mix(c, vec3(lr) + (c - lr) * vec3(0.85, 1.05, 1.1), uSkinRed * 0.6 * skinM);
+  }
   // HSL
   vec3 hsv = rgb2hsv(clamp(c, 0.0, 1.0));
   float hue = hsv.x * 360.0;
   float dH = 0.0, dS = 0.0, dL = 0.0;
   for (int i = 0; i < 8; i++) {
     float w = bandWeight(hue, i);
-    dH += w * uHslH[i]; dS += w * uHslS[i]; dL += w * uHslL[i];
+    dH += w * uHslH[i / 4][i % 4]; dS += w * uHslS[i / 4][i % 4]; dL += w * uHslL[i / 4][i % 4];
   }
   float satW = smoothstep(0.02, 0.25, hsv.y);
   if (dH != 0.0 || dS != 0.0 || dL != 0.0) {
