@@ -1,5 +1,4 @@
 // Load RAW (via LibRaw WASM) or normal images, and build preview + blur data.
-import LibRaw from 'libraw-wasm';
 
 export const RAW_EXT = ['arw', 'srf', 'sr2', 'cr2', 'cr3', 'crw', 'nef', 'nrw', 'dng', 'raf', 'orf', 'rw2', 'rwl', 'pef',
   'srw', 'x3f', '3fr', 'fff', 'iiq', 'erf', 'mef', 'mos', 'mrw', 'kdc', 'dcr', 'raw'];
@@ -70,6 +69,12 @@ let libraw = null;
 export async function loadRaw(file, { half = true, onStatus = () => {} } = {}) {
   onStatus('Đang đọc file RAW…');
   const buf = new Uint8Array(await file.arrayBuffer());
+  let LibRaw;
+  try {
+    ({ default: LibRaw } = await import('libraw-wasm'));
+  } catch {
+    throw new Error('Bản này chưa kèm bộ giải mã RAW. Hãy dùng bản tự host (GitHub Pages) để mở RAW, hoặc xuất JPEG từ máy ảnh/điện thoại rồi mở.');
+  }
   if (libraw) { try { libraw.dispose(); } catch { /* ignore */ } }
   libraw = new LibRaw();
   onStatus('Đang giải mã RAW (có thể mất 5–20 giây)…');
