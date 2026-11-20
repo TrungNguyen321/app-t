@@ -267,7 +267,27 @@ function resetKeys(keys) {
   return el('button', { class: 'btn small', onclick: () => { for (const k of keys) state.params[k] = clone(d[k]); render(); commit(); renderPanel(); } }, 'Đặt lại');
 }
 
+// Re-rendering a panel must not jump the scroll position back to the start
+// (picking a look/recipe/profile re-renders the same panel).
 function renderPanel() {
+  const panel = $('#panel'), body0 = $('#panelBody');
+  const key = state.tab + '|' + (state.profTab || '') + '|' + state.bodyMode;
+  const keep = renderPanel._key === key;
+  const top = panel.scrollTop;
+  const lefts = [...body0.querySelectorAll('.looks, .chips')].map((e) => e.scrollLeft);
+  renderPanel._key = key;
+  renderPanelInner();
+  if (keep) {
+    panel.scrollTop = top;
+    body0.querySelectorAll('.looks, .chips').forEach((e, i) => { if (lefts[i] != null) e.scrollLeft = lefts[i]; });
+  } else {
+    panel.scrollTop = 0;
+    // new panel: bring the selected look/recipe into view
+    const act = body0.querySelector('.looks .look.active');
+    if (act) act.scrollIntoView({ block: 'nearest', inline: 'center' });
+  }
+}
+function renderPanelInner() {
   for (const b of tabs.children) b.classList.toggle('active', b.dataset.tab === state.tab);
   const body = $('#panelBody'); body.innerHTML = '';
   if (!state.img && state.tab !== 'looks') { body.append(el('p', { class: 'hint' }, 'Mở một ảnh để bắt đầu.')); return; }
