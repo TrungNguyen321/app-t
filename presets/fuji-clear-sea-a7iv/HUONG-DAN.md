@@ -17,16 +17,16 @@ Tone biển kiểu máy Fuji: trong veo, sạch, da sáng hồng nhẹ, nước 
 
 ## Thông số chính (bản Base)
 - **Profile:** Adobe Standard (có thể thử *Camera Neutral* nếu muốn trong hơn nữa)
-- **Light:** Exposure +0.35 · Contrast −12 · Highlights −55 · Shadows +35 · Whites +18 · Blacks −6
+- **Light:** Exposure +0.35 · Contrast −12 · Highlights −45 · Shadows +35 · Whites +22 · Blacks −6
 - **Presence:** Texture −8 · Clarity −6 · Dehaze +6 · Vibrance +12 · Saturation −6
-- **Tone Curve:** nâng điểm đen (0→10) tạo độ "film", hạ nhẹ điểm trắng (255→250); kênh Blue nâng shadow để có ánh xanh Fuji
+- **Tone Curve:** nâng điểm đen (0→10) tạo độ "film", hạ nhẹ điểm trắng (255→253); kênh Blue chỉ nâng shadow (0→6), giữ nguyên điểm trắng để trời không ám xanh rêu
 - **HSL:**
   - Đỏ/Cam: Cam Hue −5, Sat −12, Lum +16 → **da sáng, hồng, không vàng**
   - Vàng −15 Hue, −22 Sat → loại bỏ ám vàng trên bê tông, cát
   - Xanh lá +22 Hue, −28 Sat → lá dừa xanh dịu kiểu Fuji
   - Aqua −10 Hue, +6 Sat, +8 Lum → thúng chai & biển xanh ngọc trong
   - Xanh dương −12 Hue → trời/biển ngả cyan
-- **Color Grading:** Shadow xanh teal (200°/8) · Highlight vàng kem (48°/6) · Blending 60
+- **Color Grading:** Shadow xanh teal (200°/8) · Highlight vàng kem rất nhẹ (45°/3) · Blending 60
 - **Calibration:** Red +8/+6 · Green −12/−8 · Blue −18/+18 (đặc trưng màu Fuji)
 - **Detail:** Sharpen 40 / 1.0 / 25 / Masking 45 · NR Luminance 8 · Color 25
 - **Grain:** 10 / 18 / 45 (hạt rất mịn)
@@ -45,5 +45,5 @@ Tone biển kiểu máy Fuji: trong veo, sạch, da sáng hồng nhẹ, nước 
 
 ## Mẹo chụp trên Sony A7IV để preset ăn đẹp nhất
 - Chụp RAW (Uncompressed hoặc Lossless Compressed), DRO tắt.
-- Đo sáng ưu tiên da (Face priority), chấp nhận trời hơi cháy – preset có Highlights −55 để kéo lại.
+- Đo sáng ưu tiên da (Face priority), chấp nhận trời hơi cháy – preset có Highlights −45 để kéo lại.
 - Ảnh ngược sáng/chiều muộn: dùng bản **03 Golden Hour**; trời trưa nắng gắt: dùng **01 Base** hoặc **04 Airy**.
