@@ -80,7 +80,8 @@ export async function loadRaw(file, { half = true, onStatus = () => {} } = {}) {
   onStatus('Đang giải mã RAW (có thể mất 5–20 giây)…');
   await libraw.open(buf, {
     useCameraWb: true, outputBps: 16, gamm: [1, 1], noAutoBright: true,
-    outputColor: 1, highlight: 0, userQual: 3, halfSize: half,
+    // keep ~1 stop of highlight headroom (exposure -1 EV, highlight blend); the shader adds it back
+    outputColor: 1, highlight: 2, userQual: 3, halfSize: half, expCorrec: true, expShift: 0.5, expPreser: 0,
   });
   const meta = await libraw.metadata(false).catch(() => ({}));
   const img = await libraw.imageData();
@@ -88,6 +89,13 @@ export async function loadRaw(file, { half = true, onStatus = () => {} } = {}) {
   if (img.colors !== 3 || img.bits !== 16) throw new Error(`Định dạng đầu ra không hỗ trợ (${img.colors} kênh, ${img.bits} bit)`);
   const data = img.data instanceof Uint16Array ? img.data : new Uint16Array(img.data.buffer, img.data.byteOffset, img.data.byteLength / 2);
   const w = img.width, h = img.height;
+  // per-channel clip level (sensor saturation after WB), used to neutralise clipped highlights
+  const clip = [0, 0, 0];
+  for (let i = 0; i < data.length; i += 3) {
+    if (data[i] > clip[0]) clip[0] = data[i];
+    if (data[i + 1] > clip[1]) clip[1] = data[i + 1];
+    if (data[i + 2] > clip[2]) clip[2] = data[i + 2];
+  }
   onStatus('Đang tạo ảnh xem trước…');
   const prev = downscaleU16(data, w, h, PREVIEW_MAX);
   const pd = prev.data, pw = prev.w;
@@ -98,7 +106,7 @@ export async function loadRaw(file, { half = true, onStatus = () => {} } = {}) {
   try { libraw.dispose(); } catch { /* ignore */ }
   libraw = null;
   return {
-    isRaw: true, name: file.name, meta,
+    isRaw: true, name: file.name, meta, clip: clip.map((c) => Math.max(c, 1) / 65535),
     full: { kind: 'u16', w, h, data },
     preview: { kind: 'u16', w: prev.w, h: prev.h, data: prev.data },
     blur,
@@ -134,7 +142,7 @@ export async function loadImage(file, { onStatus = () => {} } = {}) {
     return 0.2126 * SRGB_TO_LIN[id[i]] + 0.7152 * SRGB_TO_LIN[id[i + 1]] + 0.0722 * SRGB_TO_LIN[id[i + 2]];
   });
   return {
-    isRaw: false, name: file.name, meta: {},
+    isRaw: false, name: file.name, meta: {}, clip: [1, 1, 1],
     full: { kind: 'srgb', source: bmp },
     preview: { kind: 'srgb', source: cv },
     blur,

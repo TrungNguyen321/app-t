@@ -65,6 +65,8 @@ uniform vec4 uBoxB[6];      // amount, angle, -, -
 uniform sampler2D uDisp;    // liquify displacement field (crop uv), RG
 uniform float uDispOn;
 uniform float uSkinSmooth, uSkinBright, uSkinRed;
+uniform float uRecover;           // highlight recovery 0..1
+uniform vec3 uClip;               // per-channel clip level of the source
 uniform vec2 uDRk;                 // (input white point, knee) for the DR shoulder; knee >= 1 = off
 uniform float uChrome, uChromeBlue; // colour chrome effect / blue (0..1)
 // ---- lens ----
@@ -256,7 +258,7 @@ void main() {
     lin.b = src(mirrorUv(toSrc(0.5 + c0 * (1.0 - uCA * 0.006)))).b;
   }
   if (uOriginal > 0.5) {
-    vec3 o = uIsRaw > 0.5 ? toSrgb(lin * exp2(0.35)) : toSrgb(lin);
+    vec3 o = uIsRaw > 0.5 ? toSrgb(lin * exp2(1.35)) : toSrgb(lin);
     outColor = vec4(o, 1.0); return;
   }
 
@@ -281,8 +283,17 @@ void main() {
     }
   }
 
+  // ---- clipped highlights: where any channel hit its clip level, blend to neutral
+  //      so pulling highlights down gives grey/white detail instead of magenta/cyan casts
+  {
+    vec3 cr = lin / max(uClip, vec3(1e-3));
+    float cm = max(cr.r, max(cr.g, cr.b));
+    float wc = smoothstep(0.8, 0.97, cm);
+    if (wc > 0.0) lin = mix(lin, vec3(max(lin.r, max(lin.g, lin.b))), wc);
+  }
+
   // ---- linear stage -------------------------------------------------------
-  float baseExp = uIsRaw > 0.5 ? 0.35 : 0.0;
+  float baseExp = uIsRaw > 0.5 ? 1.35 : 0.0;
   float k = exp2(uExposure + baseExp);
   lin = max(uCal * (lin * uWB), 0.0) * k;
   float wbL = luma(uWB);
@@ -299,6 +310,12 @@ void main() {
   ev2 += uHighlights * 1.9 * mh;
   ev2 += uShadows * 2.2 * ms;
   ev2 += uClarity * 0.55 * (ev - evb) * (1.0 - 0.4 * mh);
+  // highlight recovery: pull bright regions down and bring back their local detail
+  if (uRecover > 0.0) {
+    float mr = smoothstep(0.5, 1.0, pr);
+    ev2 -= uRecover * 1.5 * mr;
+    ev2 += uRecover * 0.9 * (ev - evb) * mr;
+  }
   float L2 = 0.18 * exp2(ev2);
   lin *= L2 / L;
   // dynamic range (DR200/DR400): film-like shoulder that keeps highlight detail

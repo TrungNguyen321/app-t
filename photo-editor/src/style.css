@@ -151,3 +151,9 @@ button, .btn, .chip, .look, #tabs button, label { touch-action: manipulation; -w
 /* iOS Safari zooms the whole page when a focused field has text < 16px */
 input, select, textarea, .fsel { font-size: 16px !important; }
 #stage, .ruler, #curveBox { touch-action: none; }
+
+#menuDlg { max-height: 86vh; overflow-y: auto; width: min(94vw, 460px); }
+#menuDlg .look { width: 92px; align-items: center; }
+#menuDlg .look .btn { height: 26px; font-size: 11px; padding: 0 6px; width: 88px; justify-content: center; }
+#menuDlg .looks { grid-auto-columns: 96px; }
+#toast .btn { color: var(--acc2); }

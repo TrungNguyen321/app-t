@@ -8,6 +8,7 @@ import { evalCurve } from './curves.js';
 import { RECIPES, FILM_SIMS, WB_MODES, LEVEL3, blankRecipe, effectiveParams, recipeSummary, makeProfileFile, parseProfileFile } from './recipes.js';
 import { DispCache, DISP_N } from './liquify.js';
 import { tick as haptic, hapticsOn, setHaptics } from './haptics.js';
+import * as store from './storage.js';
 
 const dispCache = new DispCache();
 let dispKey = '';
@@ -84,8 +85,9 @@ function showStatus(msg, spin = true) {
   s.append(el('div', {}, msg));
 }
 let toastT;
-function toast(msg, ms = 2600) {
+function toast(msg, ms = 2600, action = null) {
   const t = $('#toast'); t.textContent = msg; t.hidden = false;
+  if (action) t.append(' ', el('button', { class: 'btn small', style: 'margin-left:8px', onclick: () => { t.hidden = true; action.fn(); } }, action.label));
   clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; }, ms);
 }
 
@@ -97,6 +99,31 @@ function commit() {
   if (state.history.length > 80) state.history.shift();
   state.future = [];
   updateUndo();
+  autosave();
+}
+// ---- autosave edits per photo (IndexedDB) ------------------------------------------
+let saveT;
+function editSnapshot() {
+  const p = clone(state.params);
+  if (p.profile === 'custom') p.profile = '';
+  return p;
+}
+function smallThumb() {
+  try {
+    const c = $('#view'), t = document.createElement('canvas'), s = 160 / Math.max(c.width, c.height);
+    t.width = Math.max(1, Math.round(c.width * s)); t.height = Math.max(1, Math.round(c.height * s));
+    t.getContext('2d').drawImage(c, 0, 0, t.width, t.height);
+    return t.toDataURL('image/jpeg', 0.7);
+  } catch { return ''; }
+}
+function autosave() {
+  if (!state.img || !state.fileKey || state.restoring) return;
+  clearTimeout(saveT);
+  saveT = setTimeout(() => {
+    const isDefault = state.history.length <= 1 && JSON.stringify(state.params) === JSON.stringify(defaultParams());
+    if (isDefault) return;
+    store.saveEdit({ key: state.fileKey, name: state.img.name, params: editSnapshot(), thumb: smallThumb() });
+  }, 900);
 }
 function updateUndo() {
   $('#btnUndo').disabled = state.history.length < 2;
@@ -243,11 +270,13 @@ async function openFile(file) {
   try {
     const opts = { onStatus: (m) => showStatus(m), half: state.half };
     const img = isRawName(file.name) ? await loadRaw(file, opts) : await loadImage(file, opts);
+    state.fileKey = store.imageKey(file);
     showStatus('Đang chuẩn bị…');
     renderer.deleteSource(state.src);
     state.img = img;
     state.src = renderer.makeSource(img.preview);
     renderer.setBlur(img.blur.data, img.blur.w, img.blur.h);
+    renderer.clip = img.clip;
     state.params = defaultParams();
     state.history = []; state.future = []; state.thumbs = {}; state.activeLook = null; state.selPoint = -1;
     commit();
@@ -257,7 +286,13 @@ async function openFile(file) {
     layout(); render(); renderPanel();
     showStatus('');
     const [fw, fh] = fullSize(img);
-    toast(`${img.isRaw ? 'RAW' : 'Ảnh'} ${fw}×${fh}${img.meta && img.meta.model ? ' · ' + (img.meta.make || '') + ' ' + img.meta.model : ''}`);
+    const info = `${img.isRaw ? 'RAW' : 'Ảnh'} ${fw}×${fh}${img.meta && img.meta.model ? ' · ' + (img.meta.make || '') + ' ' + img.meta.model : ''}`;
+    const saved = await store.getEdit(state.fileKey);
+    if (saved && saved.params) {
+      state.params = Object.assign(defaultParams(), saved.params);
+      commit(); ensureLut(); layout(); render(); renderPanel();
+      toast(`${info} · Đã mở lại bản chỉnh trước`, 6000, { label: 'Chỉnh lại từ đầu', fn: () => { state.params = defaultParams(); commit(); ensureLut(); layout(); render(); renderPanel(); } });
+    } else toast(info);
     setTimeout(makeThumbs, 50);
   } catch (err) {
     console.error(err);
@@ -1287,6 +1322,79 @@ function portraitMove(mode, x, y, r) {
 $('#zoomBadge').addEventListener('click', () => { resetView(); relayoutSoon(); });
 $('#btnHist').addEventListener('click', () => { state.showHist = !state.showHist; $('#hist').hidden = !state.showHist || !state.img; $('#btnHist').classList.toggle('on', state.showHist); });
 
+// ---- menu: save/open edits, backup/restore, exported images ---------------------------
+const safeName = (n) => (n || 'anh').replace(/\.[^.]+$/, '').replace(/[^\w\- ]+/g, '').trim() || 'anh';
+async function saveJson(text, base) {
+  // the Claude viewer only allows .json downloads; plain browsers get the same name
+  return saveBlob(new Blob([text], { type: 'application/json' }), `${base}.json`, 'application/json');
+}
+async function renderMenu() {
+  const body = $('#menuBody'); body.innerHTML = '';
+  const fileIn = el('input', { type: 'file', accept: '.json,application/json,.profile', hidden: true });
+  fileIn.addEventListener('change', async () => {
+    const f = fileIn.files[0]; if (!f) return;
+    try {
+      const r = await store.restoreBackup(await f.text());
+      if (r.single) {
+        if (!state.img) throw new Error('Mở ảnh trước rồi mới áp bản chỉnh');
+        state.params = Object.assign(defaultParams(), r.single.params); commit(); ensureLut(); layout(); render(); renderPanel();
+        toast(`Đã áp bản chỉnh của "${r.single.name}"`);
+      } else {
+        const have = new Set(state.userPresets.map((p) => p.id));
+        for (const p of r.userPresets) if (!have.has(p.id)) state.userPresets.push(p);
+        saveUserPresets(); makeThumbs();
+        toast(`Đã khôi phục ${r.userPresets.length} kiểu và ${r.edits} bản chỉnh`, 4000);
+      }
+      renderMenu();
+    } catch (e) { toast(e.message, 5000); }
+  });
+  const sect = (t) => el('div', { class: 'sect' }, t);
+  body.append(sect('Ảnh đang chỉnh'), el('div', { class: 'row' },
+    el('button', { class: 'btn small', disabled: !state.img, onclick: async () => {
+      const text = JSON.stringify({ format: 'fuji-raw-editor-edit', version: 1, name: state.img.name, key: state.fileKey, params: editSnapshot() }, null, 1);
+      if ((await saveJson(text, safeName(state.img.name) + '.chinh')) === 'saved') toast('Đã lưu file bản chỉnh');
+    } }, 'Lưu bản chỉnh ra file'),
+    el('button', { class: 'btn small', onclick: () => fileIn.click() }, 'Mở file bản chỉnh / sao lưu'), fileIn));
+  body.append(el('p', { class: 'hint' }, 'App tự lưu bản chỉnh của từng ảnh trong trình duyệt: mở lại đúng ảnh đó là tiếp tục chỉnh được. Lưu ra file để không mất khi xoá dữ liệu Safari.'));
+  body.append(sect('Sao lưu tất cả'), el('div', { class: 'row' },
+    el('button', { class: 'btn small primary', onclick: async () => {
+      const text = await store.makeBackup(state.userPresets);
+      const d = new Date().toISOString().slice(0, 10);
+      if ((await saveJson(text, `fuji-raw-saoluu-${d}`)) === 'saved') toast('Đã lưu file sao lưu — cất trong app Tệp (Files)', 4000);
+    } }, 'Sao lưu ra file'),
+    el('button', { class: 'btn small', onclick: () => fileIn.click() }, 'Khôi phục từ file')));
+  body.append(el('p', { class: 'hint' }, 'File sao lưu chứa mọi "Kiểu của bạn" và bản chỉnh của các ảnh. Xoá cache/dữ liệu trang web xong chỉ cần bấm "Khôi phục từ file".'));
+
+  const exps = await store.listExports();
+  body.append(sect(`Ảnh đã xuất gần đây (${exps.length})`));
+  if (!exps.length) body.append(el('p', { class: 'hint' }, 'Chưa có. Ảnh xuất sẽ hiện ở đây để lưu/chia sẻ lại.'));
+  const grid = el('div', { class: 'looks' });
+  for (const x of exps) {
+    grid.append(el('div', { class: 'look' },
+      x.thumb ? el('img', { src: x.thumb, alt: '' }) : el('div', { class: 'ph' }),
+      el('span', {}, `${x.w}×${x.h}`),
+      el('button', { class: 'btn small', onclick: () => saveBlob(x.blob, x.name) }, 'Lưu lại'),
+      el('button', { class: 'btn small danger', onclick: async () => { await store.deleteExport(x.id); renderMenu(); } }, 'Xoá')));
+  }
+  if (exps.length) body.append(grid);
+
+  const edits = await store.listEdits();
+  body.append(sect(`Bản chỉnh đã lưu (${edits.length})`));
+  const eg = el('div', { class: 'looks' });
+  for (const e of edits) {
+    eg.append(el('div', { class: 'look' },
+      e.thumb ? el('img', { src: e.thumb, alt: '' }) : el('div', { class: 'ph' }),
+      el('span', {}, e.name),
+      el('button', { class: 'btn small', disabled: !state.img, onclick: () => { state.params = Object.assign(defaultParams(), e.params); commit(); ensureLut(); layout(); render(); renderPanel(); toast('Đã áp bản chỉnh này cho ảnh đang mở'); } }, 'Áp vào ảnh này'),
+      el('button', { class: 'btn small danger', onclick: async () => { await store.deleteEdit(e.key); renderMenu(); } }, 'Xoá')));
+  }
+  if (edits.length) body.append(eg);
+  body.append(sect('Ảnh xuất được lưu ở đâu?'), el('p', { class: 'hint' },
+    'iPhone: bấm Xuất → bảng Chia sẻ → "Lưu hình ảnh" để vào app Ảnh, hoặc "Lưu vào Tệp". Nếu trình duyệt tải xuống trực tiếp, ảnh nằm trong app Tệp → Tải về (Downloads). Trong app Claude: chọn "Lưu" ở bảng hiện ra.'));
+}
+$('#btnMenu').addEventListener('click', () => { renderMenu(); $('#menuDlg').showModal(); });
+store.persist();
+
 // ---- export ----------------------------------------------------------------------------
 const dlg = $('#exportDlg');
 $('#expQ').addEventListener('input', () => { $('#expQv').textContent = $('#expQ').value; });
@@ -1353,6 +1461,7 @@ async function doExport(maxSide, quality) {
     cv.width = cv.height = 1;
     const base = img.name.replace(/\.[^.]+$/, '');
     showStatus('');
+    store.addExport({ id: 'x' + Date.now(), name: `${base}-edit.jpg`, blob, w: ow, h: oh, date: Date.now(), thumb: smallThumb() });
     const r = await saveBlob(blob, `${base}-edit.jpg`);
     toast(r === 'saved' ? `Đã xuất ${ow}×${oh} (${(blob.size / 1048576).toFixed(1)} MB)` : 'Đã huỷ lưu');
   } catch (e) {

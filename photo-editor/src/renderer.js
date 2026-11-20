@@ -190,6 +190,7 @@ export class Renderer {
     f('uDetailScale', detailScale);
     f('uIsRaw', isRaw ? 1 : 0);
     f('uOriginal', original ? 1 : 0);
+    gl.uniform3fv(u.uClip, this.clip || [1, 1, 1]);
     f('uLutOn', this.lut && !original ? 1 : 0);
     f('uLutAmount', p.lutAmount / 100);
     f('uLutSize', this.lut ? this.lut.size : 1);
@@ -275,8 +276,10 @@ export class Renderer {
     {
       const dr = p.dr || 100;
       const wb = wbMultipliers(p.temp, p.tint);
-      const gain = Math.pow(2, p.exposure + (this._isRaw ? 0.35 : 0)) * Math.max(...wb) * (1 + Math.max(0, p.shadows) / 100 * 0.3);
-      const knee = off ? 1 : dr >= 400 ? 0.5 : dr >= 300 ? 0.6 : dr >= 200 ? 0.68 : 1;
+      const gain = Math.pow(2, p.exposure + (this._isRaw ? 1.35 : 0)) * Math.max(...wb) * (1 + Math.max(0, p.shadows) / 100 * 0.3);
+      let knee = off ? 1 : dr >= 400 ? 0.5 : dr >= 300 ? 0.6 : dr >= 200 ? 0.68 : 1;
+      if (!off && p.recover > 0) knee = Math.min(knee, 1 - (p.recover / 100) * 0.45);
+      f('uRecover', off ? 0 : (p.recover || 0) / 100);
       gl.uniform2f(u.uDRk, Math.max(1.05, gain), knee);
     }
     const L = p.lens || {};
