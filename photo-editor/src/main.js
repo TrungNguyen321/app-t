@@ -316,12 +316,14 @@ for (const [id, name] of TABS) {
 }
 
 /** double-tap detection that works even when page-level double-tap zoom is blocked */
-function onDoubleTap(elm, fn) {
-  let t = 0, x = 0, y = 0;
+const tapMem = new Map();
+/** key: optional stable id so the double-tap survives the element being re-rendered */
+function onDoubleTap(elm, fn, key = null) {
+  const mem = key ? (tapMem.get(key) || tapMem.set(key, { t: 0, x: 0, y: 0 }).get(key)) : { t: 0, x: 0, y: 0 };
   elm.addEventListener('pointerup', (e) => {
     const now = Date.now();
-    if (now - t < 350 && Math.hypot(e.clientX - x, e.clientY - y) < 24) { t = 0; fn(e); }
-    else { t = now; x = e.clientX; y = e.clientY; }
+    if (now - mem.t < 380 && Math.hypot(e.clientX - mem.x, e.clientY - mem.y) < 28) { mem.t = 0; fn(e); }
+    else { mem.t = now; mem.x = e.clientX; mem.y = e.clientY; }
   });
 }
 function fmt(v, step) { return step < 1 ? (+v).toFixed(2) : String(Math.round(v)); }
@@ -337,6 +339,7 @@ function slider(label, min, max, step, get, set, { def = 0, hue = false } = {}) 
   const reset = () => { set(def); inp.value = def; upd(); render(); commit(); };
   onDoubleTap(lab, reset);
   onDoubleTap(val, reset);
+  onDoubleTap(inp, reset);
   upd();
   return el('div', { class: 'slider' + (hue ? ' hue' : '') }, lab, val, inp);
 }
@@ -438,6 +441,13 @@ function compactSliders(body, id, defs, extraTitle) {
     const c = el('button', { class: 'chip' + (k === i ? ' active' : ''), onclick: () => select(k) }, d.label, el('b', {}));
     chips.append(c); return c;
   });
+  const resetK = (k) => {
+    const d = defs[k]; d.set(d.def || 0);
+    if (k === i) ruler.setValue(d.def || 0);
+    upd(); render(); commit(); haptic('strong');
+  };
+  chipEls.forEach((c, k) => onDoubleTap(c, () => resetK(k)));
+  onDoubleTap(ruler.el, () => resetK(i));
   const updChips = () => defs.forEach((d, k) => {
     const v = d.get(), nz = Math.abs(v - (d.def || 0)) > 1e-9;
     chipEls[k].lastChild.textContent = nz ? ' ' + fmt(v, d.step) : '';
@@ -456,7 +466,7 @@ function compactSliders(body, id, defs, extraTitle) {
     chipEls[k].scrollIntoView({ block: 'nearest', inline: 'center' });
     upd();
   };
-  onDoubleTap(big, () => { const d = defs[i]; d.set(d.def || 0); ruler.setValue(d.def || 0); upd(); render(); commit(); });
+  onDoubleTap(big, () => resetK(i));
   const head = el('div', { class: 'row', style: 'margin:0 0 2px;justify-content:space-between' }, big,
     el('div', { class: 'row', style: 'margin:0' }, extraTitle || null,
       el('button', { class: 'btn small' + (hapticsOn ? ' on' : ''), title: 'Rung khi qua vạch', onclick: (e) => { setHaptics(!hapticsOn); e.currentTarget.classList.toggle('on', hapticsOn); if (hapticsOn) haptic('strong'); } }, '〰'),
@@ -643,7 +653,7 @@ async function exportProfile() {
 
 function panelProfile(body) {
   const sub = state.profTab || 'recipes';
-  const head = el('div', { class: 'chips' });
+  const head = el('div', { class: 'chips params' });
   [['recipes', 'Công thức Fuji'], ['edit', 'Chỉnh công thức'], ['lut', 'Giả lập phim / LUT']].forEach(([k, n]) =>
     head.append(el('button', { class: 'chip' + (sub === k ? ' active' : ''), onclick: () => { state.profTab = k; renderPanel(); } }, n)));
   body.append(head);
@@ -735,8 +745,12 @@ function panelHsl(body) {
     state.params.hslH.fill(0); state.params.hslS.fill(0); state.params.hslL.fill(0); render(); commit(); renderPanel();
   } }, 'Đặt lại')));
   const chips = el('div', { class: 'chips' });
-  HSL_BANDS.forEach((b, i) => chips.append(el('button', { class: 'chip' + (state.hslBand === i ? ' active' : ''), onclick: () => { state.hslBand = i; renderPanel(); } },
-    el('span', { class: 'dot', style: `background:${b.color}` }), b.name)));
+  HSL_BANDS.forEach((b, i) => {
+    const c = el('button', { class: 'chip' + (state.hslBand === i ? ' active' : ''), onclick: () => { state.hslBand = i; renderPanel(); } },
+      el('span', { class: 'dot', style: `background:${b.color}` }), b.name);
+    onDoubleTap(c, () => { const P = state.params; P.hslH[i] = P.hslS[i] = P.hslL[i] = 0; render(); commit(); renderPanel(); haptic('strong'); toast(`Đã đặt lại màu ${b.name}`); }, 'hsl-band-' + i);
+    chips.append(c);
+  });
   body.append(chips);
   const i = state.hslBand, p = () => state.params;
   compactSliders(body, 'hsl', [
@@ -888,7 +902,7 @@ function panelFace(body) {
 function panelBody(body) {
   const p = state.params;
   body.append(title('Dáng người'));
-  const chips = el('div', { class: 'chips' });
+  const chips = el('div', { class: 'chips params' });
   [['height', 'Kéo cao chân'], ['slim', 'Thon gọn'], ['push', 'Đẩy tự do']].forEach(([k, n]) =>
     chips.append(el('button', { class: 'chip' + (state.bodyMode === k ? ' active' : ''), onclick: () => { state.bodyMode = k; renderPanel(); drawOverlay(); } }, n)));
   body.append(chips);
@@ -930,8 +944,8 @@ const FILLS = [['mirror-blur', 'Phản chiếu + mờ'], ['mirror', 'Phản chi�
 function panelLens(body) {
   const p = state.params, L = p.lens, B = p.lensBlur;
   const sub = state.lensTab || 'persp';
-  const head = el('div', { class: 'chips' });
-  [['persp', 'Phối cảnh'], ['distort', 'Méo & viền màu'], ['blur', 'Làm mờ ống kính'], ['fill', 'Rìa & mở rộng']].forEach(([k, n]) =>
+  const head = el('div', { class: 'chips params' });
+  [['persp', 'Phối cảnh'], ['fish', 'Mắt cá'], ['distort', 'Méo & viền màu'], ['blur', 'Làm mờ ống kính'], ['fill', 'Rìa & mở rộng']].forEach(([k, n]) =>
     head.append(el('button', { class: 'chip' + (sub === k ? ' active' : ''), onclick: () => { state.lensTab = k; renderPanel(); drawOverlay(); } }, n)));
   body.append(head);
   const d = (label, obj, key, min, max, step, def = 0, after) => ({ label, min, max, step, def, get: () => obj[key], set: (v) => { obj[key] = v; if (after) after(); } });
@@ -943,6 +957,15 @@ function panelLens(body) {
       d('Phóng to (che rìa)', L, 'zoom', 1, 2, 0.01, 1),
     ]);
     body.append(el('p', { class: 'hint' }, 'Kéo "Dọc" để dựng thẳng cột, nhà bị chụm khi chụp ngước. Phần rìa bị hở sẽ được lấp theo mục "Rìa & mở rộng", hoặc tăng "Phóng to" để cắt bỏ.'));
+  } else if (sub === 'fish') {
+    body.append(el('div', { class: 'row', style: 'margin:0 0 6px' },
+      el('button', { class: 'chip' + (!L.fisheyeCircle ? ' active' : ''), onclick: () => { L.fisheyeCircle = false; render(); commit(); renderPanel(); } }, 'Toàn khung'),
+      el('button', { class: 'chip' + (L.fisheyeCircle ? ' active' : ''), onclick: () => { L.fisheyeCircle = true; render(); commit(); renderPanel(); } }, 'Khung tròn')));
+    compactSliders(body, 'lens-fish', [
+      d('Mắt cá', L, 'fisheye', 0, 100, 1),
+      d('Phóng to', L, 'zoom', 1, 2, 0.01, 1),
+    ]);
+    body.append(el('p', { class: 'hint' }, 'Mắt cá phóng to vùng giữa và bẻ cong mép như ống fisheye. "Khung tròn" cho viền đen tròn kiểu fisheye cổ điển. Hợp ảnh kiến trúc, đường phố, chân dung vui nhộn.'));
   } else if (sub === 'distort') {
     compactSliders(body, 'lens-distort', [
       d('Méo ống kính', L, 'distort', -100, 100, 1),
@@ -1310,11 +1333,13 @@ function portraitMove(mode, x, y, r) {
   for (const ev of ['gesturestart', 'gesturechange', 'gestureend']) document.addEventListener(ev, (e) => e.preventDefault(), { passive: false });
   // block page-level pinch / double-tap zoom anywhere (the photo view has its own zoom)
   document.addEventListener('touchmove', (e) => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
-  let lastTouchEnd = 0;
+  // only a real double-tap (same spot, quick) is blocked; quick taps on different buttons still work
+  let lastTouch = { t: 0, x: 0, y: 0 };
   document.addEventListener('touchend', (e) => {
-    const now = Date.now();
-    if (now - lastTouchEnd < 320 && !e.target.closest('input, select, textarea')) e.preventDefault();
-    lastTouchEnd = now;
+    const now = Date.now(), t = e.changedTouches[0];
+    const near = t && Math.hypot(t.clientX - lastTouch.x, t.clientY - lastTouch.y) < 30;
+    if (now - lastTouch.t < 320 && near && !e.target.closest('input, select, textarea')) e.preventDefault();
+    lastTouch = { t: now, x: t ? t.clientX : 0, y: t ? t.clientY : 0 };
   }, { passive: false });
   document.addEventListener('dblclick', (e) => e.preventDefault(), { passive: false });
 })();
