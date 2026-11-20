@@ -9,6 +9,7 @@ import { RECIPES, FILM_SIMS, WB_MODES, LEVEL3, blankRecipe, effectiveParams, rec
 import { DispCache, DISP_N } from './liquify.js';
 import { tick as haptic, hapticsOn, setHaptics } from './haptics.js';
 import * as store from './storage.js';
+import { paramsToXmp, lutToCube, makeZip, README_LR } from './lrexport.js';
 
 const dispCache = new DispCache();
 let dispKey = '';
@@ -1449,6 +1450,9 @@ async function renderMenu() {
     } }, 'Sao lưu ra file'),
     el('button', { class: 'btn small', onclick: () => fileIn.click() }, 'Khôi phục từ file')));
   body.append(el('p', { class: 'hint' }, 'File sao lưu chứa mọi "Kiểu của bạn" và bản chỉnh của các ảnh. Xoá cache/dữ liệu trang web xong chỉ cần bấm "Khôi phục từ file".'));
+  body.append(sect('Xuất cho Lightroom PC'), el('div', { class: 'row' },
+    el('button', { class: 'btn small primary', onclick: () => exportLightroom() }, 'Xuất preset Lightroom (.zip)')));
+  body.append(el('p', { class: 'hint' }, 'File .zip gồm: bản đang chỉnh + mọi "Kiểu của bạn" dạng .xmp, kèm profile .cube và hướng dẫn. Chép sang máy tính rồi nhập vào Lightroom / Camera Raw.'));
 
   const exps = await store.listExports();
   body.append(sect(`Ảnh đã xuất gần đây (${exps.length})`));
@@ -1493,6 +1497,26 @@ async function renderMenu() {
   } catch { /* ignore */ }
   body.append(sect('Ảnh xuất được lưu ở đâu?'), el('p', { class: 'hint' },
     'iPhone: bấm Xuất → bảng Chia sẻ → "Lưu hình ảnh" để vào app Ảnh, hoặc "Lưu vào Tệp". Nếu trình duyệt tải xuống trực tiếp, ảnh nằm trong app Tệp → Tải về (Downloads). Trong app Claude: chọn "Lưu" ở bảng hiện ra.'));
+}
+async function exportLightroom() {
+  const ascii = (s) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'D').replace(/[^\w\- ]+/g, '').trim().replace(/\s+/g, '-') || 'preset';
+  const files = [{ name: 'HUONG-DAN.txt', data: README_LR }];
+  const cubes = new Map();
+  const add = (name, params, group) => {
+    const p = effectiveParams(sanitizeParams(params));
+    let note = '';
+    if (p.profile === 'custom' && state.customLut) { note = ascii(state.customLut.name) + '.cube'; cubes.set(note, state.customLut); }
+    else if (p.profile && PROFILES[p.profile]) { note = ascii(PROFILES[p.profile].name.replace(' (phong cách)', '')) + '.cube'; cubes.set(note, state.lutCache[p.profile] || (state.lutCache[p.profile] = buildProfileLUT(p.profile))); }
+    files.push({ name: `Presets/${ascii(name)}.xmp`, data: paramsToXmp(name, p, { group, profileNote: note }).xmp });
+  };
+  if (state.img) add('Ban chinh - ' + safeName(state.img.name), state.params, 'Fuji RAW Editor - Ban chinh');
+  for (const pr of state.userPresets) add(pr.name, pr.params, 'Fuji RAW Editor - Kieu cua ban');
+  if (files.length === 1) { toast('Chưa có gì để xuất: mở ảnh đã chỉnh hoặc lưu "Kiểu của bạn" trước', 4000); return; }
+  for (const [n, lut] of cubes) files.push({ name: `Profiles/${n}`, data: lutToCube(lut) });
+  const zip = makeZip(files);
+  const d = new Date().toISOString().slice(0, 10);
+  const r = await saveBlob(new Blob([zip], { type: 'application/zip' }), `lightroom-presets-${d}.zip`, 'application/zip');
+  if (r === 'saved') toast(`Đã xuất ${files.length - 1 - cubes.size} preset + ${cubes.size} profile`, 4000);
 }
 $('#btnMenu').addEventListener('click', () => { renderMenu(); $('#menuDlg').showModal(); });
 store.persist();
