@@ -125,7 +125,7 @@ def fuji_grade(rgb_lin):
            - 0.18 * w_sand                 # cát sạch
            - 0.12 * w_green                # lá dịu
            + 0.12 * w_aqua                 # biển trong, có chiều sâu
-           + 0.08 * w_blue)
+           + 0.14 * w_blue)                # trời nhạt vẫn giữ ánh xanh
     C2 = C * sat
 
     # --- Độ sáng theo màu ---
@@ -136,16 +136,19 @@ def fuji_grade(rgb_lin):
     # trời xanh nhẹ đậm hơn ở chroma cao cho trong veo, không bệt
     dL += -0.02 * w_blue * np.clip(C / 0.12, 0, 1)
     L2 = L + dL
+    # Độ đặc màu kiểu phim Fuji: màu xanh (biển, thuyền, trời) đậm hơn theo chroma, không đụng da/cát
+    w_cool = np.clip(w_aqua + w_blue + 0.6 * w_green, 0, 1)
+    L2 = L2 - 0.22 * C * w_cool * np.clip((L - 0.25) / 0.3, 0, 1)
 
     # --- Split-tone rất nhẹ: shadow lạnh ngọc, highlight ấm kem ---
     sh = np.clip((0.45 - L2) / 0.45, 0, 1) ** 1.5
     hl = np.clip((L2 - 0.65) / 0.35, 0, 1) ** 1.5
-    a2 = C2 * np.cos(h2) + (-0.006) * sh + (0.002) * hl
-    b2 = C2 * np.sin(h2) + (-0.004) * sh + (0.006) * hl
+    a2 = C2 * np.cos(h2) + (-0.006) * sh + (0.000) * hl
+    b2 = C2 * np.sin(h2) + (-0.004) * sh + (0.0015) * hl
 
     # --- Nén chroma ở highlight (trắng sạch, nắng không bị vàng/cháy màu) ---
     Cn = np.hypot(a2, b2)
-    hl_desat = 1.0 - 0.35 * np.clip((L2 - 0.82) / 0.18, 0, 1)
+    hl_desat = 1.0 - 0.20 * np.clip((L2 - 0.93) / 0.07, 0, 1)   # chỉ trắng hóa vùng gần cháy, giữ ánh cyan của trời
     knee, maxc = 0.16, 0.26
     Cc = np.where(Cn > knee, knee + (maxc - knee) * np.tanh((Cn - knee) / (maxc - knee)), Cn)
     scale = np.where(Cn > 1e-9, Cc / np.maximum(Cn, 1e-9), 1.0) * hl_desat
@@ -173,7 +176,9 @@ def gamut_clip(rgb):
 def white_balance(lin, warm=0.0, tint=0.0):
     """warm>0 ấm hơn; tint>0 hồng hơn (bù xanh lá do nắng biển phản chiếu)."""
     gains = np.array([1 + 0.5 * warm + 0.25 * tint, 1 - 0.5 * tint, 1 - 0.5 * warm + 0.25 * tint])
-    return lin * gains
+    Y = np.clip(lin @ np.array([0.2126, 0.7152, 0.0722]), 0, 1)[..., None]
+    k = 1.0 - np.clip((Y - 0.35) / 0.55, 0, 1) ** 1.5      # không ám ấm vùng trời/highlight
+    return lin * (1 + (gains - 1) * k)
 
 # ---------------- sRGB (ảnh) ----------------
 def srgb_to_lin(v):
@@ -184,9 +189,9 @@ def lin_to_srgb(l):
     l = np.clip(l, 0, 1)
     return np.where(l <= 0.0031308, l * 12.92, 1.055 * l ** (1 / 2.4) - 0.055)
 
-def tone_photo(v, brighten=0.045, shoulder=0.03, black=0.012):
+def tone_photo(v, brighten=0.035, shoulder=0.035, black=0.006):
     """Tone trên giá trị sRGB đã mã hóa: nâng trung tính (da sáng, thoáng), vai highlight mềm, đen sạch có độ nổi nhẹ."""
-    v = v + brighten * np.sin(np.pi * v) * (1 - v) * 1.6
+    v = v + brighten * np.sin(np.pi * v) * (1 - v) ** 1.5 * 1.8     # nâng trung tính/da, gần như không đụng highlight
     v = v - shoulder * np.sin(2 * np.pi * v) * (v > 0.5)
     v = black + (1 - black) * v                          # matte rất nhẹ kiểu film Fuji
     return np.clip(v, 0, 1)
